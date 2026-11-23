@@ -85,5 +85,14 @@ int main(void)
    TEST_EQ_STR("other-core", fe.associations[1].handlers[0]);
    TEST_EQ_STR("reader", fe.associations[0].default_handler);
 
+   set_association(&fe, 2, "md", "picodrive");
+   unifrog_text_copy(fe.associations[2].handlers[1],
+      sizeof(fe.associations[2].handlers[1]), "reader");
+   fe.associations[2].handler_count = 2;
+   association = frontend_association_for_path(&fe,
+      "/ROMS/sega/Sonic The Hedgehog (USA, Europe).md");
+   TEST_CHECK(association == &fe.associations[2]);
+   TEST_EQ_STR("picodrive", association->default_handler);
+
    return test_finish("file associations");
 }

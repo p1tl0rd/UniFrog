@@ -267,17 +267,41 @@ int is_content_file(const struct frontend_state *fe, const char *path)
       is_media_file(path) || is_reader_file(path);
 }
 
+static int core_accepts_path_in_system_dir(const struct frontend_state *fe,
+   const char *core, const char *path)
+{
+   const struct frontend_association *association;
+   const struct unifrog_core_registry_entry *entry;
+
+   if (!core || !core[0] || !path)
+      return 0;
+   if (fe && fe->core_registry.count) {
+      entry = unifrog_core_registry_find(&fe->core_registry, core);
+      return entry ? unifrog_core_registry_entry_supports_path(entry, path) : 0;
+   }
+   association = frontend_association_for_path(fe, path);
+   if (association) {
+      for (unsigned i = 0; i < association->handler_count; i++) {
+         if (strcmp(association->handlers[i], core) == 0)
+            return 1;
+      }
+   }
+   return strcmp(core, "picodrive") == 0 &&
+      unifrog_text_ends_with_ci(path, ".md");
+}
+
 const char *default_handler_for_path(const struct frontend_state *fe,
    const char *path)
 {
    const struct frontend_association *association =
       frontend_association_for_path(fe, path);
-   const char *core;
+   const char *core = core_from_path_dirs(fe, path);
 
+   if (core && core_accepts_path_in_system_dir(fe, core, path))
+      return core;
    if (association && association->default_handler[0] &&
        is_builtin_handler(association->default_handler))
       return association->default_handler;
-   core = core_from_path_dirs(fe, path);
    if (core)
       return core;
    return association && association->default_handler[0] ?
