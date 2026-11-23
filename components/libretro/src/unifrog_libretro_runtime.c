@@ -964,7 +964,6 @@ static void loading_draw_frame(const char *title, const char *detail,
 
    if (percent > 100)
       percent = 100;
-   libretro_watchdog_load_progress(detail ? detail : title, percent, 100);
    buffer = host.loading_fb.current_buffer;
    if (host.loading_fb.buffer_count > 1)
       buffer = (host.loading_fb.current_buffer + 1) % host.loading_fb.buffer_count;
@@ -1060,6 +1059,7 @@ void loading_draw(const char *title, const char *detail, unsigned percent)
    unifrog_text_copy(host.loading_detail, sizeof(host.loading_detail),
       detail ? detail : "");
    loading_start_task();
+   libretro_watchdog_load_progress(detail ? detail : title, percent, 100);
    loading_draw_frame(title, detail, percent);
 }
 

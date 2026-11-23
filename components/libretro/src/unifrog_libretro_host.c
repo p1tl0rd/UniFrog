@@ -752,6 +752,7 @@ static int run_core(const struct libretro_core_api *core, const char *path,
    old_log_auto_flush = unifrog_log_auto_flush_bytes();
    unifrog_log_set_auto_flush_bytes(LIBRETRO_LOG_AUTO_FLUSH_BYTES);
 
+   loading_close();
    memset(&host, 0, sizeof(host));
    host.pixel_format = RETRO_PIXEL_FORMAT_RGB565;
    host.core_id = core->id;
@@ -1602,6 +1603,7 @@ static int run_core_id(const char *id, const char *path,
       loaded_external = 1;
    }
    if (!core) {
+      loading_close();
       printf("unifrog libretro core unavailable id=%s\n", canonical);
       return -1;
    }

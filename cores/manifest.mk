@@ -43,7 +43,7 @@ CORE_SPECS := \
 	'gearcoleco|$(CORE_SOURCE_ROOT)/Gearcoleco|https://github.com/drhelius/Gearcoleco.git|head|149d9687624f845de4f7690b145da172f87d115a|149d9687624f845de4f7690b145da172f87d115a|-|.' \
 	'snes9x2005-prosty|$(CORE_SOURCE_ROOT)/snes9x2005-prosty|https://github.com/tzubertowski/snes9x2005.git|head|fa25aaf57a043e999f1bc3d9327a71c4cdb1d942|fa25aaf57a043e999f1bc3d9327a71c4cdb1d942|patches/snes9x2005-prosty|.' \
 	'snes9x2002-prosty|$(CORE_SOURCE_ROOT)/snes9x2002-prosty|https://github.com/tzubertowski/snes9x2002.git|head|864c7d26b6bc42f7d648d1ba68dfc37520878629|864c7d26b6bc42f7d648d1ba68dfc37520878629|patches/snes9x2002-prosty|.' \
-	'gambatte-prosty|$(CORE_SOURCE_ROOT)/libretro-gambatte-prosty|https://github.com/tzubertowski/libretro-gambatte.git|head|9e8bbe6a9a5e2cb35cfe3a851aaa631a4760f2e3|9e8bbe6a9a5e2cb35cfe3a851aaa631a4760f2e3|-|.' \
+	'gambatte-prosty|$(CORE_SOURCE_ROOT)/libretro-gambatte-prosty|https://github.com/tzubertowski/libretro-gambatte.git|head|9e8bbe6a9a5e2cb35cfe3a851aaa631a4760f2e3|9e8bbe6a9a5e2cb35cfe3a851aaa631a4760f2e3|patches/gambatte-prosty|.' \
 	'quicknes-prosty|$(CORE_SOURCE_ROOT)/QuickNES_Core-prosty|https://github.com/tzubertowski/QuickNES_Core.git|head|9a6852e768cbabfcaa884f2d69cd8ea8cea37b69|9a6852e768cbabfcaa884f2d69cd8ea8cea37b69|-|.' \
 	'frodo-prosty|$(CORE_SOURCE_ROOT)/libretro-frodo-prosty|https://github.com/tzubertowski/libretro-frodo.git|head|e2de1193e420f00c3eb65a1182bb31aa58fdfebb|e2de1193e420f00c3eb65a1182bb31aa58fdfebb|patches/frodo-prosty|.' \
 	'fake08-prosty|$(CORE_SOURCE_ROOT)/fake-08-prosty|https://github.com/tzubertowski/fake-08.git|head|b87983eaf7492fdd945f2897024e0bb725e1e15d|b87983eaf7492fdd945f2897024e0bb725e1e15d|patches/fake08-prosty|.' \

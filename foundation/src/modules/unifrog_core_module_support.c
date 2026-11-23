@@ -23,7 +23,7 @@
 #undef getc
 
 #define MODULE_FD_BASE 3
-#define MODULE_FD_COUNT 16
+#define MODULE_FD_COUNT 32
 #define MODULE_DIR_BASE 100
 #define MODULE_DIR_COUNT 8
 #define MODULE_PRINTF_BUFFER 512u
@@ -628,13 +628,45 @@ static unsigned module_dir_style_for_path(const char *path)
    return MODULE_DIR_STYLE_FIRMWARE;
 }
 
+static int module_fd_register(FILE *stream)
+{
+   if (!stream)
+      return -1;
+   for (int i = 0; i < MODULE_FD_COUNT; i++) {
+      if (module_fd_table[i] == stream)
+         return i + MODULE_FD_BASE;
+   }
+   for (int i = 0; i < MODULE_FD_COUNT; i++) {
+      if (!module_fd_table[i]) {
+         module_fd_table[i] = stream;
+         return i + MODULE_FD_BASE;
+      }
+   }
+   return -1;
+}
+
+static void module_fd_unregister(FILE *stream)
+{
+   if (!stream)
+      return;
+   for (int i = 0; i < MODULE_FD_COUNT; i++) {
+      if (module_fd_table[i] == stream)
+         module_fd_table[i] = NULL;
+   }
+}
+
 FILE *fopen(const char *path, const char *mode)
 {
    const struct unifrog_abi *abi = module_abi();
    char mapped[MODULE_PATH_BUFFER];
+   FILE *stream;
 
-   return abi && abi->fopen ?
-      abi->fopen(module_map_path(path, mapped, sizeof(mapped)), mode) : NULL;
+   if (!abi || !abi->fopen)
+      return NULL;
+   stream = abi->fopen(module_map_path(path, mapped, sizeof(mapped)), mode);
+   if (stream)
+      (void)module_fd_register(stream);
+   return stream;
 }
 
 FILE *_fopen_r(struct _reent *r, const char *path, const char *mode)
@@ -647,6 +679,7 @@ int fclose(FILE *stream)
 {
    const struct unifrog_abi *abi = module_abi();
 
+   module_fd_unregister(stream);
    return abi && abi->fclose ? abi->fclose(stream) : -1;
 }
 
@@ -722,6 +755,13 @@ size_t fwrite(const void *ptr, size_t size, size_t nmemb, FILE *stream)
    return abi && abi->fwrite ? abi->fwrite(ptr, size, nmemb, stream) : 0;
 }
 
+size_t _fwrite_r(struct _reent *r, const void *ptr, size_t size,
+   size_t nmemb, FILE *stream)
+{
+   (void)r;
+   return fwrite(ptr, size, nmemb, stream);
+}
+
 int fseek(FILE *stream, long offset, int whence)
 {
    const struct unifrog_abi *abi = module_abi();
@@ -779,6 +819,12 @@ int fflush(FILE *stream)
    const struct unifrog_abi *abi = module_abi();
 
    return abi && abi->fflush ? abi->fflush(stream) : 0;
+}
+
+int _fflush_r(struct _reent *r, FILE *stream)
+{
+   (void)r;
+   return fflush(stream);
 }
 
 int setvbuf(FILE *stream, char *buf, int mode, size_t size)
@@ -924,15 +970,13 @@ static int module_fill_file_stat(FILE *file, struct stat *st)
 int open(const char *path, int flags, ...)
 {
    FILE *file = fopen(path, open_flags_to_mode(flags));
+   int fd;
 
    if (!file)
       return -1;
-   for (int i = 0; i < MODULE_FD_COUNT; i++) {
-      if (!module_fd_table[i]) {
-         module_fd_table[i] = file;
-         return i + MODULE_FD_BASE;
-      }
-   }
+   fd = module_fd_register(file);
+   if (fd >= 0)
+      return fd;
    fclose(file);
    return -1;
 }
@@ -978,6 +1022,8 @@ off_t lseek(int fd, off_t offset, int whence)
 
 int fileno(FILE *stream)
 {
+   if (!stream)
+      return -1;
    for (int i = 0; i < MODULE_FD_COUNT; i++) {
       if (module_fd_table[i] == stream)
          return i + MODULE_FD_BASE;

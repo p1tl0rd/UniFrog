@@ -1,0 +1,99 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: UniFrog <unifrog@local>
+Date: Mon, 23 Nov 2026 12:22:27 +0000
+Subject: [PATCH] Avoid FakeRTC time-domain underflow and handle truncated RTC
+ files
+
+---
+ libgambatte/libretro/libretro.cpp | 15 +++++++++------
+ libgambatte/src/mem/fake_rtc.cpp  |  6 ++++--
+ libgambatte/src/mem/rtc.cpp       | 12 +++++++++++-
+ 3 files changed, 24 insertions(+), 9 deletions(-)
+
+diff --git a/libgambatte/libretro/libretro.cpp b/libgambatte/libretro/libretro.cpp
+index a35f7a42d95a021f6b9dcddbd24d8b54069fec59..359a555a09196ab51e577a2cb0a03fe8e86b1e57 100644
+--- a/libgambatte/libretro/libretro.cpp
++++ b/libgambatte/libretro/libretro.cpp
+@@ -3381,17 +3381,20 @@ bool retro_load_game(const struct retro_game_info *info)
+       {
+          gambatte_log(RETRO_LOG_INFO, "[LIBRETRO] Initializing Gambatte RTC state (size: %u bytes)\n", rtc_size);
+          
+-         // Initialize with a realistic RTC base time that Pokemon will accept
+-         // Use system time minus a reasonable amount so Pokemon sees normal elapsed time
+-         uint64_t current_sys_time = time(NULL);
+-         uint64_t rtc_base_time = (current_sys_time > 3600) ? (current_sys_time - 3600) : 946684800; // 1 hour ago, or epoch fallback
++         // Initialize Gambatte's RTC base time in FakeRTC's time domain rather than raw
++         // system time so Rtc::doLatch() never underflows when system clock > FakeRTC clock.
++         uint64_t fake_base_time = gambatte::fake_rtc_get_base_time();
++         if (fake_base_time < 946684800ULL)
++            fake_base_time = 946684800ULL;
++         uint64_t rtc_base_time = (fake_base_time > 946684800ULL + 3600ULL)
++            ? (fake_base_time - 3600ULL) : 946684800ULL;
+          
+          // Copy the RTC base time into Gambatte's RTC data structure
+          if (rtc_size >= sizeof(uint64_t))
+          {
+             memcpy(rtc_data, &rtc_base_time, sizeof(uint64_t));
+-            gambatte_log(RETRO_LOG_INFO, "[LIBRETRO] Set Gambatte RTC base time: %llu (current sys time: %llu)\n", 
+-                        (unsigned long long)rtc_base_time, (unsigned long long)current_sys_time);
++            gambatte_log(RETRO_LOG_INFO, "[LIBRETRO] Set Gambatte RTC base time: %llu (fake rtc time: %llu)\n", 
++                        (unsigned long long)rtc_base_time, (unsigned long long)fake_base_time);
+          }
+       }
+       else
+diff --git a/libgambatte/src/mem/fake_rtc.cpp b/libgambatte/src/mem/fake_rtc.cpp
+index 04c91665de758161a7e9c8cd4fa7097fa02e68d5..35ce38bb0bbb011adab8bc02737eb5a99fd59dea 100644
+--- a/libgambatte/src/mem/fake_rtc.cpp
++++ b/libgambatte/src/mem/fake_rtc.cpp
+@@ -313,6 +313,7 @@ void FakeRtc::load_from_file()
+     std::string filepath = save_dir_ + "/" + SAVE_FILENAME;
+     
+     std::ifstream file(filepath.c_str(), std::ios::binary);
++    bool loaded_valid = false;
+     if (file.is_open())
+     {
+         uint32_t loaded_minutes = 0;
+@@ -320,12 +321,13 @@ void FakeRtc::load_from_file()
+         if (file.gcount() == sizeof(loaded_minutes))
+         {
+             state_.total_minutes = loaded_minutes;
++            loaded_valid = true;
+         }
+         file.close();
+     }
+-    else
++    if (!loaded_valid)
+     {
+-        // If no save file exists, start with a reasonable time
++        // If no save file exists or the file is truncated, start with a reasonable time
+         // Set to approximately 2 years after epoch (Jan 1, 2002)  
+         // This gives games a reasonable-looking RTC time
+         state_.total_minutes = 2 * 365 * 24 * 60; // 2 years in minutes
+diff --git a/libgambatte/src/mem/rtc.cpp b/libgambatte/src/mem/rtc.cpp
+index 3e302068d085b81f7f0917ca83585b6795a30ea5..203150e4696276c3d466d5f63ad98c869cbf5d1f 100644
+--- a/libgambatte/src/mem/rtc.cpp
++++ b/libgambatte/src/mem/rtc.cpp
+@@ -58,7 +58,17 @@ namespace gambatte
+    void Rtc::doLatch()
+    {
+       uint64_t current_time = get_current_time();
+-      uint64_t tmp = ((dataDh_ & 0x40) ? haltTime_ : current_time) - baseTime_;
++      uint64_t target_time = (dataDh_ & 0x40) ? haltTime_ : current_time;
++      uint64_t tmp = 0;
++
++      if (target_time >= baseTime_)
++      {
++         tmp = target_time - baseTime_;
++      }
++      else if (!(dataDh_ & 0x40))
++      {
++         baseTime_ = current_time;
++      }
+ 
+       while (tmp > 0x1FF * 86400)
+       {
+
+base-commit: 9e8bbe6a9a5e2cb35cfe3a851aaa631a4760f2e3
+-- 
+2.43.0
+
