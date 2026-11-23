@@ -1,0 +1,81 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: UniFrog <unifrog@local>
+Date: Mon, 23 Nov 2026 13:26:25 +0000
+Subject: [PATCH 2/2] Use 44100 Hz native audio and in-memory ROM loading on
+ SF2000
+
+---
+ libretro/libretro.c | 20 +++++++++++++-------
+ neopopsound.c       |  2 +-
+ 2 files changed, 14 insertions(+), 8 deletions(-)
+
+diff --git a/libretro/libretro.c b/libretro/libretro.c
+index 7e0ff5f0db25f986902a1bbf4bba305631186a27..ffb962d862abdbfab133c2a57ad6c456db62e4a5 100755
+--- a/libretro/libretro.c
++++ b/libretro/libretro.c
+@@ -105,7 +105,7 @@ static void init_frameskip(void)
+ #if !defined(SF2000)
+ static int RETRO_SAMPLE_RATE = 44100;
+ #else
+-static int RETRO_SAMPLE_RATE = 11025;
++static int RETRO_SAMPLE_RATE = 44100;
+ #endif
+ 
+ struct ngp_screen* screen;
+@@ -333,8 +333,6 @@ static bool race_initialize_sound(void)
+ static bool race_initialize_system(const char *gamepath,
+       const unsigned char *gamedata, size_t gamesize)
+ {
+-   mainemuinit();
+-
+    if (!handleInputFile(gamepath, gamedata, (int)gamesize))
+    {
+       handle_error("ERROR handleInputFile");
+@@ -354,7 +352,7 @@ void retro_get_system_info(struct retro_system_info *info)
+ #define GIT_VERSION ""
+ #endif
+ 
+-   info->need_fullpath    = true;
++   info->need_fullpath    = false;
+    info->library_version  = RACE_VERSION GIT_VERSION;
+    info->valid_extensions = RACE_EXTENSIONS;
+    info->block_extract    = false;
+@@ -508,11 +506,19 @@ bool retro_load_game(const struct retro_game_info *info)
+    }
+    else
+    {
+-      if (!info || !info->path)
++      if (!info || (!info->path && (!info->data || !info->size)))
+          return false;
+ 
+-      strncpy(content_path, info->path, sizeof(content_path));
+-      content_path[sizeof(content_path) - 1] = '\0';
++      if (info->data && info->size)
++      {
++         content_data = (const unsigned char *)info->data;
++         content_size = info->size;
++      }
++      if (info->path)
++      {
++         strncpy(content_path, info->path, sizeof(content_path));
++         content_path[sizeof(content_path) - 1] = '\0';
++      }
+    }
+ 
+    environ_cb(RETRO_ENVIRONMENT_SET_INPUT_DESCRIPTORS, desc);
+diff --git a/neopopsound.c b/neopopsound.c
+index d99538ccfb8914858b55b50430fed0a01d9c859c..a2a12399586f9da49240c16c5bf13ff8b6c41861 100644
+--- a/neopopsound.c
++++ b/neopopsound.c
+@@ -421,7 +421,7 @@ void system_sound_chipreset(void)
+ #if !defined(SF2000)
+ 	sound_init(44100);
+ #else
+-	sound_init(11025);
++	sound_init(44100);
+ #endif
+ }
+ 
+-- 
+2.43.0
+

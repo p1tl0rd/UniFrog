@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: UniFrog Maintainers <unifrog@example.invalid>
 Date: Mon, 22 Jun 2026 05:29:21 +0000
-Subject: [PATCH] Add the UniFrog SF2000 RACE port
+Subject: [PATCH 1/2] Add the UniFrog SF2000 RACE port
 
 Device-specific changes are maintained as a focused patch over the original upstream pin. Vendored libretro-common and unrelated platform assets remain owned by upstream.
 ---
@@ -71,6 +71,8 @@ index b1e462cf603778f3e68b5eb0eaf3ce7cf94e8ec6..d99538ccfb8914858b55b50430fed0a0
  }
  
  int sound_system_init(void)
+
+base-commit: f65011e6639ccbbbb44b6ffa63ca50c070475df4
 -- 
-2.54.0
+2.43.0
 

@@ -1925,20 +1925,22 @@ size_t unifrog_libretro_audio_batch_cb(const int16_t *data, size_t frames)
    }
 
    while (input_offset < frames) {
-      while (input_offset < frames) {
-         int left = data[input_offset * 2];
-         int right = data[input_offset * 2 + 1];
-         int scaled;
-         unsigned abs_out;
+      int left = data[input_offset * 2];
+      int right = data[input_offset * 2 + 1];
 
-         input_offset++;
-         host.audio_resample_accum += output_rate;
-         if (host.audio_resample_accum < input_rate)
-            continue;
-         host.audio_resample_accum -= input_rate;
-         scaled = host_audio_scale_mono(left, right, &abs_out);
-         host_audio_queue_mono(scaled, abs_out);
-         offset++;
+      input_offset++;
+      host.audio_resample_accum += output_rate;
+      if (host.audio_resample_accum < input_rate)
+         continue;
+      {
+         unsigned abs_out;
+         int scaled = host_audio_scale_mono(left, right, &abs_out);
+
+         while (host.audio_resample_accum >= input_rate) {
+            host.audio_resample_accum -= input_rate;
+            host_audio_queue_mono(scaled, abs_out);
+            offset++;
+         }
       }
    }
 
