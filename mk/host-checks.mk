@@ -12,10 +12,10 @@ LINUX_CORE_IDS ?= gambatte gpsp snes9x2005 snes9x2002 quicknes fceumm gearboy pc
 LINUX_CORE_CC ?= $(or $(shell command -v cc 2>/dev/null),cc)
 LINUX_CORE_CXX ?= $(or $(shell command -v c++ 2>/dev/null),c++)
 LINUX_CORE_NM ?= $(or $(shell command -v nm 2>/dev/null),nm)
+LINUX_SD_ROOT ?= $(abspath $(BUILD)/linux/sdcard)
 LINUX_RUNNER_ROM_ROOT := $(LINUX_SD_ROOT)/ROMS
 LINUX_RUNNER_TEST_ROM := $(LINUX_RUNNER_ROM_ROOT)/sample.gb
 LINUX_RUNNER_TEST_ARCHIVE := $(LINUX_RUNNER_ROM_ROOT)/ARCADE/1943.zip
-LINUX_SD_ROOT ?= $(abspath $(BUILD)/linux/sdcard)
 HOST_VISUAL_DIR ?= $(BUILD)/host-visual
 HOST_VISUAL_ARTIFACTS := \
 	$(HOST_VISUAL_DIR)/launcher.ppm \
@@ -283,7 +283,7 @@ linux-runner-check: $(LINUX_RUNNER) $(LINUX_DUMMY_CORE) \
 	$(Q)$(LINUX_RUNNER) --run-rom "$(LINUX_RUNNER_TEST_ROM)" \
 		--core-id dummy --core-path "$(LINUX_DUMMY_CORE)" --max-frames 3 \
 		>"$(BUILD)/linux/core-run.log" 2>&1
-	$(Q)rg -q 'dummy core option unifrog_dummy_speed=fast' \
+	$(Q)grep -Fq 'dummy core option unifrog_dummy_speed=fast' \
 		"$(BUILD)/linux/core-run.log"
 	$(Q)mkdir -p "$(dir $(LINUX_RUNNER_TEST_ARCHIVE))"
 	$(Q)printf 'multi-file arcade archive placeholder\n' \
@@ -291,7 +291,7 @@ linux-runner-check: $(LINUX_RUNNER) $(LINUX_DUMMY_CORE) \
 	$(Q)$(LINUX_RUNNER) --run-rom "$(LINUX_RUNNER_TEST_ARCHIVE)" \
 		--core-id dummy-archive --core-path "$(LINUX_DUMMY_ARCHIVE_CORE)" \
 		--max-frames 3 >"$(BUILD)/linux/archive-core-run.log" 2>&1
-	$(Q)rg -q 'kind=native_archive' "$(BUILD)/linux/archive-core-run.log"
+	$(Q)grep -Fq 'kind=native_archive' "$(BUILD)/linux/archive-core-run.log"
 	$(Q)! $(LINUX_RUNNER) --run-rom "$(LINUX_RUNNER_TEST_ROM)" \
 		--core-id dummy --core-path "$(LINUX_DUMMY_CORE)" \
 		--max-frames invalid >/dev/null 2>&1

@@ -14,6 +14,7 @@ the question.
 ## Workflows
 
 - `developer-onboarding.md`: first build, edit loop, and handoff checks.
+- `ubuntu-docker-setup.md`: Ubuntu 24.04 / Docker host setup and full build steps.
 - `dependency-workflow.md`: dependency pins, patch queues, and selected cores.
 - `../cores/README.md`: libretro core build and patch workflow.
 - `../js2300/README.md`: embedded JavaScript runtime layer.

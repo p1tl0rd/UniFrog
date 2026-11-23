@@ -510,6 +510,10 @@ core-init:
 	mkdir -p "$(CORE_SOURCE_ROOT)"; \
 	status=0; \
 	pids=""; \
+	sub_filter_arg=""; \
+	if git submodule update -h 2>&1 | grep -q -- '--filter'; then \
+		sub_filter_arg="--filter=blob:none"; \
+	fi; \
 	for spec in $(CORE_SPECS); do \
 		( \
 			set -e; \
@@ -579,7 +583,7 @@ core-init:
 				fi; \
 			fi; \
 			if test "$$name" = picodrive; then \
-				git -C "$$dir" submodule update --init --depth 1 --filter=blob:none --jobs "$(JOBS)" -- cpu/cyclone pico/sound/emu2413 platform/libpicofe; \
+				git -C "$$dir" submodule update --init --depth 1 $$sub_filter_arg --jobs "$(JOBS)" -- cpu/cyclone pico/sound/emu2413 platform/libpicofe; \
 				dr_dir="$$dir/platform/common/dr_libs"; \
 				dr_url=$$(git -C "$$dir" config -f .gitmodules submodule.platform/common/dr_libs.url); \
 				dr_commit=$$(git -C "$$dir" rev-parse HEAD:platform/common/dr_libs); \
@@ -599,7 +603,7 @@ core-init:
 				git -C "$$dr_dir" reset --hard -q "$$dr_commit"; \
 				git -C "$$dr_dir" clean -fdx -q; \
 			else \
-				git -C "$$dir" submodule update --init --depth 1 --filter=blob:none --jobs "$(JOBS)"; \
+				git -C "$$dir" submodule update --init --depth 1 $$sub_filter_arg --jobs "$(JOBS)"; \
 			fi; \
 			for nested_spec in $(NESTED_CORE_SPECS); do \
 				parent=$${nested_spec%%|*}; nested_rest=$${nested_spec#*|}; \

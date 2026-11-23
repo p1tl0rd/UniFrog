@@ -25,6 +25,7 @@ if [ ! -x "$TOOLCHAIN/bin/mipsel-mti-elf-gcc" ]; then
 	}
 	stage="$TOOLCHAIN.tmp.$$"
 	cleanup() {
+		chmod -R u+w "$stage" 2>/dev/null || true
 		rm -rf "$stage"
 	}
 	trap cleanup EXIT HUP INT TERM
@@ -34,6 +35,7 @@ if [ ! -x "$TOOLCHAIN/bin/mipsel-mti-elf-gcc" ]; then
 	}
 	mkdir -p "$stage"
 	tar -C "$stage" -xf "$TOOLCHAIN_ARCHIVE"
+	chmod -R u+w "$stage"
 	found=$(find "$stage" -path '*/bin/mipsel-mti-elf-gcc' -type f -print -quit)
 	[ -n "$found" ] || {
 		echo "toolchain archive has no mipsel-mti-elf-gcc" >&2

@@ -908,12 +908,16 @@ deps-alpine:
 		pkgconf libxcb-dev
 
 deps-ubuntu:
-	@echo "sudo apt-get update && sudo apt-get install -y git make gcc perl device-tree-compiler tcc zlib1g-dev ccache curl xz-utils zip"
+	@echo "sudo apt-get update && sudo apt-get install -y git make gcc g++ perl device-tree-compiler tcc zlib1g-dev ccache curl xz-utils zip pkg-config libxcb1-dev ripgrep"
 
 deps-sdk:
 	git config --global --add safe.directory "$(abspath .)" 2>/dev/null || true
 	git submodule sync unifrog-hcrtos-sdk
-	git submodule update --init --depth 1 --filter=blob:none --jobs "$(JOBS)" \
+	filter_arg=; \
+	if git submodule update -h 2>&1 | grep -q -- '--filter'; then \
+		filter_arg="--filter=blob:none"; \
+	fi; \
+	git submodule update --init --depth 1 $$filter_arg --jobs "$(JOBS)" \
 		unifrog-hcrtos-sdk
 
 deps-js2300: $(JS2300_FETCH_STAMP)

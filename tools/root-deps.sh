@@ -95,13 +95,17 @@ fetch_ref() {
 apply_raw_patch_queue() {
 	dir=$1
 	patch=$2
+	apply_quiet=
+	if git apply -h 2>&1 | grep -q -- '--quiet'; then
+		apply_quiet=--quiet
+	fi
 	if [ -d "$patch" ]; then
 		for patch_file in "$patch"/*.patch; do
 			[ -e "$patch_file" ] || continue
-			git -C "$dir" apply --quiet --3way --index "$(pwd)/$patch_file"
+			git -C "$dir" apply $apply_quiet --3way --index "$(pwd)/$patch_file"
 		done
 	elif [ -s "$patch" ]; then
-		git -C "$dir" apply --quiet --3way --index "$(pwd)/$patch"
+		git -C "$dir" apply $apply_quiet --3way --index "$(pwd)/$patch"
 	fi
 	if ! git -C "$dir" diff --cached --quiet; then
 		git -C "$dir" commit -q -m "Apply UniFrog $(basename "$dir") patch queue"
