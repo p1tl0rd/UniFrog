@@ -105,12 +105,14 @@ int frontend_input_handle_menu_navigation(struct frontend_state *fe,
       move_selection(fe, 1);
       return 1;
    }
-   if (unifrog_ui_pressed(&fe->ui, UNIFROG_UI_L)) {
+   if (!unifrog_ui_down(&fe->ui, UNIFROG_UI_SELECT) &&
+       unifrog_ui_pressed(&fe->ui, UNIFROG_UI_L)) {
       for (unsigned i = 0; i < FRONTEND_ROWS; i++)
          move_selection(fe, -1);
       return 1;
    }
-   if (unifrog_ui_pressed(&fe->ui, UNIFROG_UI_R)) {
+   if (!unifrog_ui_down(&fe->ui, UNIFROG_UI_SELECT) &&
+       unifrog_ui_pressed(&fe->ui, UNIFROG_UI_R)) {
       for (unsigned i = 0; i < FRONTEND_ROWS; i++)
          move_selection(fe, 1);
       return 1;

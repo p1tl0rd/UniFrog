@@ -37,6 +37,23 @@ static void test_levels(void)
    TEST_EQ_INT(20, unifrog_libretro_policy_level(levels, 4, 35, -1));
 }
 
+static void test_backlight_policy(void)
+{
+   TEST_EQ_INT(1, unifrog_libretro_policy_backlight(1, -1, 0));
+   TEST_EQ_INT(1, unifrog_libretro_policy_backlight(0, -1, 0));
+   TEST_EQ_INT(5, unifrog_libretro_policy_backlight(1, 1, 0));
+   TEST_EQ_INT(10, unifrog_libretro_policy_backlight(5, 1, 0));
+   TEST_EQ_INT(60, unifrog_libretro_policy_backlight(50, 1, 0));
+   TEST_EQ_INT(40, unifrog_libretro_policy_backlight(50, -1, 0));
+   TEST_EQ_INT(100, unifrog_libretro_policy_backlight(100, 1, 0));
+   TEST_EQ_INT(100, unifrog_libretro_policy_backlight(120, 1, 0));
+   TEST_EQ_INT(90, unifrog_libretro_policy_backlight(100, -1, 0));
+   TEST_EQ_INT(40, unifrog_libretro_policy_backlight(35, 1, 0));
+   TEST_EQ_INT(30, unifrog_libretro_policy_backlight(35, -1, 0));
+   TEST_EQ_INT(1, unifrog_libretro_policy_backlight(100, 1, 1));
+   TEST_EQ_INT(100, unifrog_libretro_policy_backlight(1, -1, 1));
+}
+
 static void test_cpu_policy(void)
 {
    TEST_EQ_INT(11, unifrog_libretro_policy_cpu_count(1));
@@ -100,6 +117,7 @@ int main(void)
 {
    test_cycles();
    test_levels();
+   test_backlight_policy();
    test_cpu_policy();
    test_validation();
    test_labels();

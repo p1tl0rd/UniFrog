@@ -37,6 +37,7 @@ void frontend_launch_game(struct frontend_state *fe, struct frontend_item *item)
          item->path, (unsigned long)st.st_mode, (long)st.st_size);
       return;
    }
+   frontend_flush_pending_backlight_save(fe);
    unifrog_log("frontend launch game path=%s core=%s\n", item->path,
       item->core);
    options = fe->run_options;
@@ -46,6 +47,7 @@ void frontend_launch_game(struct frontend_state *fe, struct frontend_item *item)
       options.core_id[0] = '\0';
    unifrog_frontend_config_apply(&fe->scoped_config, options.core_id,
       item->path, &options);
+   options.backlight_level = fe->run_options.backlight_level;
    if (options.core_id[0]) {
       const char *safe_core = safe_core_for_path(fe, item->path,
          options.core_id);
@@ -70,6 +72,17 @@ void frontend_launch_game(struct frontend_state *fe, struct frontend_item *item)
    unifrog_diag_memory_snapshot("frontend.launch");
    frontend_sound_shutdown();
    ret = frontend_services_run_game(fe, item->path, &options);
+   {
+      unsigned active_backlight = 0;
+
+      if (unifrog_backlight_get(&active_backlight) == 0 &&
+          active_backlight <= 100u &&
+          fe->run_options.backlight_level != (int)active_backlight) {
+         fe->run_options.backlight_level = (int)active_backlight;
+         fe->backlight_save_pending = 0;
+         (void)save_settings(fe);
+      }
+   }
    {
       unsigned config_errors = 0;
 
@@ -146,6 +159,7 @@ void frontend_launch_media(struct frontend_state *fe,
          item->path, errno);
       return;
    }
+   frontend_flush_pending_backlight_save(fe);
    unifrog_log("frontend launch media path=%s\n", item->path);
    memset(&progress, 0, sizeof(progress));
    progress.fe = fe;
@@ -186,6 +200,7 @@ void frontend_launch_reader(struct frontend_state *fe,
       frontend_set_status(fe, "missing: %s", item->name);
       return;
    }
+   frontend_flush_pending_backlight_save(fe);
    unifrog_log("frontend launch reader path=%s\n", item->path);
    if (fe->launch_splash)
       frontend_loading_show(fe, "Reader", item->name, "opening", 15);
@@ -237,6 +252,7 @@ void frontend_launch_script(struct frontend_state *fe,
          item->path, errno, stat_ret == 0 ? (long)st.st_size : -1l);
       return;
    }
+   frontend_flush_pending_backlight_save(fe);
    unifrog_log("frontend script launch path=%s size=%ld\n",
       item->path, (long)st.st_size);
    if (fe->launch_splash)

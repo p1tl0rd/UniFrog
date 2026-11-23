@@ -62,10 +62,15 @@ chooser. The same defaults can be edited
 on-device through `Config -> General -> ROM Systems`, so users do not need a PC
 to change their setup.
 
-SF2000 uses `SELECT` as a neutral shortcut modifier in the frontend:
-the `SELECT` modifier stays fixed, while the paired button for resume, log
-flush, and screenshot shortcuts can be remapped in `Launch defaults -> Hotkeys`.
-That keeps shortcuts predictable on the smaller SF2000 button set without
+SF2000 and GB300 use `SELECT` as a neutral shortcut modifier in the frontend
+and in-game:
+- `SELECT+L` / `SELECT+R` dims or brightens the screen across 12 clamped levels
+  (`1, 5, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100%`) both in the frontend menus
+  and during libretro gameplay. Changes stay synchronized between menu and game
+  and persist in `/unifrog_data/unifrog.ini` across power cycles and reboots.
+- `SELECT+A` launches the last game, `SELECT+X` queues a screenshot log, and
+  `SELECT+Y` force-flushes logs.
+That keeps shortcuts predictable on the SF2000/GB300 button set without
 locking the user to one binding.
 
 Credits should acknowledge MuOS as a major interface and theme-format

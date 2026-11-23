@@ -7,10 +7,6 @@ const struct quick_memory_file quick_memory_files[] = {
    { RETRO_MEMORY_RTC, "rtc" },
 };
 
-const unsigned quick_backlight_levels[] = {
-   1, 5, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100,
-};
-
 size_t libretro_content_read_chunk(void)
 {
    return UNIFROG_SD_EXPERIMENTAL ?
@@ -327,13 +323,10 @@ void libretro_activity_set_core_call(
 void host_apply_runtime_options(void)
 {
    if (host.options.backlight_level >= 0) {
-      host.backlight_restore_valid =
-         unifrog_backlight_get(&host.backlight_restore_level) == 0;
       host.backlight_apply_ret =
          unifrog_backlight_set((unsigned)host.options.backlight_level);
-      printf("unifrog libretro backlight target=%d ret=%d restore_valid=%d restore=%u\n",
-         host.options.backlight_level, host.backlight_apply_ret,
-         host.backlight_restore_valid, host.backlight_restore_level);
+      printf("unifrog libretro backlight target=%d ret=%d\n",
+         host.options.backlight_level, host.backlight_apply_ret);
    }
 
    if (host.scpu_target_mhz) {
@@ -360,13 +353,6 @@ void host_restore_runtime_options(void)
       printf("unifrog libretro scpu restore ret=%d current=%u target=%u original=%u\n",
          ret, unifrog_scpu_current_mhz(), host.scpu_target_mhz,
          host.scpu_restore.mhz);
-   }
-
-   if (host.backlight_restore_valid) {
-      int ret = unifrog_backlight_set(host.backlight_restore_level);
-
-      printf("unifrog libretro backlight restore ret=%d level=%u target=%d\n",
-         ret, host.backlight_restore_level, host.options.backlight_level);
    }
 }
 
@@ -1535,11 +1521,23 @@ void unifrog_libretro_input_poll_cb(void)
             buttons |= host.local_buttons;
          host.port_buttons[port] = buttons;
          /*
+          * Suppress SELECT+L/R brightness chords from reaching port 0 gameplay
+          * while keeping all other inputs intact.
+          */
+         if (port == 0 &&
+             (buttons & UNIFROG_BUTTON_MASK(UNIFROG_BUTTON_SELECT)) &&
+             (buttons & (UNIFROG_BUTTON_MASK(UNIFROG_BUTTON_L) |
+                         UNIFROG_BUTTON_MASK(UNIFROG_BUTTON_R)))) {
+            buttons &= ~(UNIFROG_BUTTON_MASK(UNIFROG_BUTTON_SELECT) |
+                         UNIFROG_BUTTON_MASK(UNIFROG_BUTTON_L) |
+                         UNIFROG_BUTTON_MASK(UNIFROG_BUTTON_R));
+         }
+         /*
           * Most cores query every libretro button separately. Convert the
           * platform mask once per poll so each callback is only a bit test.
           */
          host.port_joypad_masks[port] =
-            joypad_mask_from_buttons(host.port_buttons[port]);
+            joypad_mask_from_buttons(buttons);
       }
       host.input_poll_frame = frame;
    }

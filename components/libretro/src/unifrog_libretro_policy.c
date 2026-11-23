@@ -192,6 +192,30 @@ unsigned unifrog_libretro_policy_level(const unsigned *levels, size_t count,
    return levels[0];
 }
 
+unsigned unifrog_libretro_policy_backlight(unsigned current, int delta,
+   int wrap)
+{
+   static const unsigned levels[] = {
+      1u, 5u, 10u, 20u, 30u, 40u, 50u, 60u, 70u, 80u, 90u, 100u,
+   };
+
+   if (wrap)
+      return unifrog_libretro_policy_level(levels, ARRAY_SIZE(levels),
+         current, delta);
+   if (delta < 0) {
+      for (size_t i = ARRAY_SIZE(levels); i > 0; i--) {
+         if (levels[i - 1u] < current)
+            return levels[i - 1u];
+      }
+      return levels[0];
+   }
+   for (size_t i = 0; i < ARRAY_SIZE(levels); i++) {
+      if (levels[i] > current)
+         return levels[i];
+   }
+   return levels[ARRAY_SIZE(levels) - 1u];
+}
+
 const char *unifrog_libretro_policy_frameskip_label(int frameskip)
 {
    switch (frameskip) {

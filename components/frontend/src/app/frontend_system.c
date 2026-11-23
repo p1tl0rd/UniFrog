@@ -148,6 +148,7 @@ void frontend_prepare_safe_shutdown(struct frontend_state *fe)
       return;
    frontend_loading_show(fe, "Safe Shutdown", "saving settings",
       "writing configuration", 20);
+   fe->backlight_save_pending = 0;
    settings_ret = save_settings(fe);
    frontend_loading_show(fe, "Safe Shutdown", "saving clock",
       "writing clock state", 40);

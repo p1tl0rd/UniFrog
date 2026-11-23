@@ -7,7 +7,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-static uint32_t script_button(const char *name)
+static uint32_t script_single_button(const char *name)
 {
    if (strcmp(name, "up") == 0)
       return UNIFROG_BUTTON_MASK(UNIFROG_BUTTON_UP);
@@ -46,6 +46,31 @@ static char *trim_token(char *text)
    while (end > text && (end[-1] == ' ' || end[-1] == '\t'))
       *--end = '\0';
    return text;
+}
+
+static uint32_t script_button(const char *name)
+{
+   char buf[64];
+   char *part;
+   uint32_t mask = 0;
+
+   if (!name || !name[0] || strlen(name) >= sizeof(buf))
+      return 0;
+   strcpy(buf, name);
+   part = buf;
+   while (part) {
+      char *plus = strchr(part, '+');
+      uint32_t bit;
+
+      if (plus)
+         *plus = '\0';
+      bit = script_single_button(trim_token(part));
+      if (!bit)
+         return 0;
+      mask |= bit;
+      part = plus ? plus + 1 : NULL;
+   }
+   return mask;
 }
 
 int unifrog_linux_frontend_run_script(const char *script)

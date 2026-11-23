@@ -7,6 +7,8 @@
 extern "C" {
 #endif
 
+#define UNIFROG_BACKLIGHT_DEFAULT_LEVEL 50u
+
 unsigned unifrog_libretro_policy_fast_forward(unsigned current, int delta);
 unsigned unifrog_libretro_policy_audio_gain(unsigned configured);
 size_t unifrog_libretro_policy_cpu_count(int include_default);
@@ -20,6 +22,8 @@ int unifrog_libretro_policy_input_profile(int current, int delta);
 int unifrog_libretro_policy_ge_clock(int current, int delta);
 unsigned unifrog_libretro_policy_level(const unsigned *levels, size_t count,
    unsigned current, int delta);
+unsigned unifrog_libretro_policy_backlight(unsigned current, int delta,
+   int wrap);
 const char *unifrog_libretro_policy_frameskip_label(int frameskip);
 const char *unifrog_libretro_policy_ge_label(int ge_clock);
 int unifrog_libretro_policy_native_archive(int need_fullpath,

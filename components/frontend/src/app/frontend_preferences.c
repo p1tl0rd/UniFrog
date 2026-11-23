@@ -44,7 +44,7 @@ void frontend_show_launch_settings(struct frontend_state *fe)
    if (fe->run_options.backlight_level < 0)
       snprintf(detail, sizeof(detail), "platform default");
    else
-      snprintf(detail, sizeof(detail), "%d",
+      snprintf(detail, sizeof(detail), "%d%%",
          fe->run_options.backlight_level);
    add_item(fe, "Backlight", detail, FRONTEND_ITEM_ACTION, "backlight", NULL);
    add_item(fe, "Device Board", fe->device_board, FRONTEND_ITEM_ACTION,
@@ -145,7 +145,7 @@ void frontend_change_config(struct frontend_state *fe, int dir)
       fe->run_options.rtc_offset_minutes = next;
    } else if (strcmp(item->path, "backlight") == 0) {
       static const int levels[] = {
-         -1, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100,
+         -1, 1, 5, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100,
       };
       unsigned index = 0;
 
@@ -160,6 +160,7 @@ void frontend_change_config(struct frontend_state *fe, int dir)
       fe->run_options.backlight_level = levels[index];
       if (levels[index] >= 0)
          (void)unifrog_backlight_set((unsigned)levels[index]);
+      fe->backlight_save_pending = 0;
    } else if (strcmp(item->path, "device_board") == 0) {
       static const char *const boards[] = { "auto", "sf2000", "gb300" };
       unsigned index = 0;
@@ -267,4 +268,43 @@ int frontend_preferences_activate(struct frontend_state *fe,
       return 1;
    }
    return activate_toggle(fe, item->path, selected);
+}
+
+void frontend_flush_pending_backlight_save(struct frontend_state *fe)
+{
+   if (!fe || !fe->backlight_save_pending)
+      return;
+   fe->backlight_save_pending = 0;
+   (void)save_settings(fe);
+}
+
+void frontend_adjust_backlight(struct frontend_state *fe, int delta,
+   uint32_t now)
+{
+   unsigned current = UNIFROG_BACKLIGHT_DEFAULT_LEVEL;
+   unsigned next;
+
+   if (!fe)
+      return;
+   if (fe->run_options.backlight_level >= 0)
+      current = (unsigned)fe->run_options.backlight_level;
+   else if (unifrog_backlight_get(&current) != 0)
+      current = UNIFROG_BACKLIGHT_DEFAULT_LEVEL;
+   if (current > 100u)
+      current = 100u;
+   next = unifrog_libretro_policy_backlight(current, delta, 0);
+   (void)unifrog_backlight_set(next);
+   fe->run_options.backlight_level = (int)next;
+   fe->backlight_save_pending = 1;
+   fe->backlight_save_due_ms = now + 400u;
+   if (fe->view == FRONTEND_VIEW_LAUNCH_SETTINGS) {
+      unsigned selected = fe->selected;
+      unsigned scroll = fe->scroll;
+
+      frontend_show_launch_settings(fe);
+      restore_view_selection(fe, selected, scroll);
+   }
+   frontend_set_status(fe, "Backlight %u%%", next);
+   unifrog_log("frontend shortcut action=backlight combo=%s level=%u\n",
+      delta < 0 ? "SELECT+L" : "SELECT+R", next);
 }

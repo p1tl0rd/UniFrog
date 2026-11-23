@@ -274,6 +274,13 @@ linux-runner-check: $(LINUX_RUNNER) $(LINUX_DUMMY_CORE) \
 		>/dev/null 2>&1
 	$(Q)test -s "$(BUILD)/linux/browser.ppm"
 	$(Q)! cmp -s "$(BUILD)/linux/apps.ppm" "$(BUILD)/linux/browser.ppm"
+	$(Q)printf '%s\n' 'backlight=50' > "$(LINUX_SD_ROOT)/unifrog_data/unifrog.ini"
+	$(Q)$(LINUX_RUNNER) --script "select+r" \
+		--render-ppm "$(BUILD)/linux/backlight-up.ppm" >/dev/null 2>&1
+	$(Q)grep -Fq 'backlight=60' "$(LINUX_SD_ROOT)/unifrog_data/unifrog.ini"
+	$(Q)$(LINUX_RUNNER) --script "select+l,select+l" \
+		--render-ppm "$(BUILD)/linux/backlight-down.ppm" >/dev/null 2>&1
+	$(Q)grep -Fq 'backlight=40' "$(LINUX_SD_ROOT)/unifrog_data/unifrog.ini"
 	$(Q)printf '%s\n' \
 		'[core-options.dummy]' \
 		'unifrog_dummy_speed=slow' \

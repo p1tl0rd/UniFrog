@@ -285,6 +285,8 @@ struct frontend_state {
    int loaded_theme_alternate;
    uint32_t last_draw_signature;
    uint32_t animation_draw_ms;
+   int backlight_save_pending;
+   uint32_t backlight_save_due_ms;
    unsigned nav_log_last_selected;
    enum frontend_view nav_log_last_view;
    int applied_style_id;
@@ -550,6 +552,9 @@ int sync_default_boot(struct frontend_state *fe);
 const char *active_storage_label(void);
 int save_settings(struct frontend_state *fe);
 void load_settings(struct frontend_state *fe);
+void frontend_flush_pending_backlight_save(struct frontend_state *fe);
+void frontend_adjust_backlight(struct frontend_state *fe, int delta,
+   uint32_t now);
 void frontend_associations_load(struct frontend_state *fe);
 int frontend_associations_save(const struct frontend_state *fe);
 const struct frontend_association *frontend_association_for_path(

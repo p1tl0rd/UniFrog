@@ -15,7 +15,8 @@ static unsigned session_backlight(void)
 
    if (unifrog_backlight_get(&current) != 0)
       current = host.options.backlight_level >= 0 ?
-         (unsigned)host.options.backlight_level : 50u;
+         (unsigned)host.options.backlight_level :
+         UNIFROG_BACKLIGHT_DEFAULT_LEVEL;
    return current > 100u ? 100u : current;
 }
 
@@ -80,8 +81,7 @@ static int session_cycle_input(int delta)
 static int session_cycle_backlight(int delta)
 {
    unsigned current = session_backlight();
-   unsigned next = unifrog_libretro_policy_level(quick_backlight_levels,
-      ARRAY_SIZE(quick_backlight_levels), current, delta);
+   unsigned next = unifrog_libretro_policy_backlight(current, delta, 0);
    (void)unifrog_backlight_set(next);
    host.options.backlight_level = (int)next;
    return (int)next;
@@ -308,7 +308,6 @@ static int session_settings_write(FILE *file, void *userdata)
    fprintf(file, "gain=%u\n", host.audio_gain);
    fprintf(file, "cpu=%u\n", session_scpu_mhz());
    fprintf(file, "ge_clock=%d\n", host.ge_clock);
-   fprintf(file, "backlight=%u\n", session_backlight());
    fprintf(file, "frameskip=%d\n", host.options.frameskip);
    fprintf(file, "display=%d\n", host.display_mode);
    fprintf(file, "framebuffer=%d\n", host.options.framebuffer_format);

@@ -299,9 +299,12 @@ struct libretro_host {
    int scpu_apply_ret;
    int variables_dirty;
    unsigned scpu_target_mhz;
-   int backlight_restore_valid;
    int backlight_apply_ret;
-   unsigned backlight_restore_level;
+   uint32_t backlight_repeat_button;
+   uint32_t backlight_next_repeat_ms;
+   uint32_t backlight_osd_until_ms;
+   unsigned backlight_osd_level;
+   int backlight_osd_active;
    struct unifrog_fb loading_fb;
    unifrog_task_handle loading_task;
    int loading_open;
@@ -371,7 +374,6 @@ extern bool unifrog_libretro_rumble_trampoline(unsigned port,
    enum retro_rumble_effect effect, uint16_t strength);
 
 extern const struct quick_memory_file quick_memory_files[2];
-extern const unsigned quick_backlight_levels[12];
 
 uint64_t host_time_us(void);
 unsigned host_elapsed_ms(uint64_t start_us, uint64_t end_us);

@@ -189,7 +189,9 @@ void frontend_draw(struct frontend_state *fe)
          frontend_screen_style(fe, UNIFROG_FRONTEND_LVGL_LAUNCH));
       if (unifrog_frontend_lvgl_draw_launcher(&fe->ui, fe->theme, fe->selected,
             detail, fe->status[0] ? fe->status :
-            (fe->last_path[0] ? tr(fe, "A open  SELECT+A resume") : NULL)) == 0)
+            (fe->last_path[0] ?
+               tr(fe, "A open  SELECT+A resume  SELECT+L/R bright") :
+               tr(fe, "A open  SELECT+L/R bright"))) == 0)
          return;
 
       unifrog_ui_begin(&fe->ui, fe->theme->background);
@@ -235,8 +237,9 @@ void frontend_draw(struct frontend_state *fe)
       }
       unifrog_ui_footer(&fe->ui, fe->theme,
          fe->status[0] ? fe->status :
-         (fe->last_path[0] ? tr(fe, "A open  SELECT+A resume") :
-            tr(fe, "A open  L/R page")),
+         (fe->last_path[0] ?
+            tr(fe, "A open  SELECT+A resume  SELECT+L/R bright") :
+            tr(fe, "A open  SELECT+L/R bright")),
          tr(fe, "B back"));
       unifrog_ui_present(&fe->ui);
       return;
@@ -295,7 +298,8 @@ void frontend_draw(struct frontend_state *fe)
              fe->item_glyph_path, fe->item_glyph);
           drawn = unifrog_frontend_lvgl_draw_menu(&fe->ui, fe->theme, screen, fe->title,
                 fe->selected, detail,
-                fe->status[0] ? fe->status : tr(fe, "A select  B back"), labels, values,
+                fe->status[0] ? fe->status :
+                tr(fe, "A select  B back  SELECT+L/R bright"), labels, values,
                 fe->item_glyph, fe->item_count) == 0;
        }
        free(labels);

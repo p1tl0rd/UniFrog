@@ -80,6 +80,7 @@ static int draw_logo(struct unifrog_fb *fb, const char *tag)
    uint32_t done_ms;
    int vsync1_ret;
    int vsync2_ret;
+   unsigned active_backlight = BOOT_LOGO_BACKLIGHT;
    int ret;
 
    if (!fb || !fb->pixels ||
@@ -106,19 +107,24 @@ static int draw_logo(struct unifrog_fb *fb, const char *tag)
    vsync2_ms = pan_ms;
    (void)unifrog_av_set_mode(0);
    av_ms = unifrog_perf_time_ms();
-   ret = unifrog_backlight_set(BOOT_LOGO_BACKLIGHT);
+   if (boot_logo_active && unifrog_backlight_get(&active_backlight) == 0) {
+      ret = 0;
+   } else {
+      active_backlight = BOOT_LOGO_BACKLIGHT;
+      ret = unifrog_backlight_set(active_backlight);
+   }
    done_ms = unifrog_perf_time_ms();
    boot_logo_active = 1;
    boot_logo_shown_ms = done_ms;
    unifrog_boot_trace_mark(FASTBOOT_TRACE_UNIFROG_BOOT_LOGO_DONE,
-      unifrog_perf_time_ms(), BOOT_LOGO_BACKLIGHT, (uint32_t)ret);
+      unifrog_perf_time_ms(), active_backlight, (uint32_t)ret);
    unifrog_boot_trace_log("boot.logo_done");
    printf("unifrog boot_logo shown tag=%s %ux%u backlight=%u ret=%d "
       "total_ms=%lu fill_ms=%lu draw_ms=%lu flush_ms=%lu pan_ms=%lu "
       "vsync1_ms=%lu vsync1_ret=%d vsync2_ms=%lu vsync2_ret=%d "
       "av_ms=%lu backlight_ms=%lu\n",
       tag ? tag : "", BOOT_LOGO_WIDTH, BOOT_LOGO_HEIGHT,
-      BOOT_LOGO_BACKLIGHT, ret,
+      active_backlight, ret,
       (unsigned long)(done_ms - start_ms),
       (unsigned long)(fill_ms - start_ms),
       (unsigned long)(draw_ms - fill_ms),

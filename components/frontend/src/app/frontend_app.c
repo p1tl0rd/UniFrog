@@ -369,6 +369,7 @@ static int activate_typed_action(struct frontend_state *fe,
       frontend_show_storage(fe);
       return 1;
    case UNIFROG_FRONTEND_ACTION_REBOOT:
+      frontend_flush_pending_backlight_save(fe);
       frontend_loading_show(fe, "Reboot", "system", "rebooting", 90);
       (void)unifrog_log_flush();
       unifrog_boot_reboot();
@@ -518,6 +519,7 @@ static void activate(struct frontend_state *fe)
          frontend_set_status(fe, "unsupported .asd name");
          return;
       }
+      frontend_flush_pending_backlight_save(fe);
       frontend_loading_show(fe, "Firmware", item.name, "rebooting", 90);
       ret = unifrog_boot_asd_path(rel);
       frontend_set_status(fe, "firmware boot failed %d", ret);
@@ -615,6 +617,9 @@ static void loop_once(struct frontend_state *fe)
          }
       }
    }
+   if (fe->backlight_save_pending &&
+       (int32_t)(now - fe->backlight_save_due_ms) >= 0)
+      frontend_flush_pending_backlight_save(fe);
    if (now - fe->log_flush_ms >= 30000u) {
       fe->log_flush_ms = now;
       if (unifrog_log_pending() > 0)
@@ -656,6 +661,18 @@ static void loop_once(struct frontend_state *fe)
          unifrog_ui_pressed(&fe->ui, UNIFROG_UI_SELECT)))) {
       unifrog_frontend_lvgl_request_screenshot();
       frontend_set_status(fe, "screenshot log queued");
+      combo_handled = 1;
+   } else if (select_down && !unifrog_ui_down(&fe->ui, UNIFROG_UI_R) &&
+       (unifrog_ui_repeated(&fe->ui, UNIFROG_UI_L, now, 380, 140) ||
+        (unifrog_ui_down(&fe->ui, UNIFROG_UI_L) &&
+         unifrog_ui_pressed(&fe->ui, UNIFROG_UI_SELECT)))) {
+      frontend_adjust_backlight(fe, -1, now);
+      combo_handled = 1;
+   } else if (select_down && !unifrog_ui_down(&fe->ui, UNIFROG_UI_L) &&
+       (unifrog_ui_repeated(&fe->ui, UNIFROG_UI_R, now, 380, 140) ||
+        (unifrog_ui_down(&fe->ui, UNIFROG_UI_R) &&
+         unifrog_ui_pressed(&fe->ui, UNIFROG_UI_SELECT)))) {
+      frontend_adjust_backlight(fe, 1, now);
       combo_handled = 1;
    }
 
@@ -923,6 +940,7 @@ void unifrog_frontend_app_shutdown(void)
 {
    if (!frontend_app_initialized)
       return;
+   frontend_flush_pending_backlight_save(&frontend_app);
    unifrog_ui_close(&frontend_app.ui);
    memset(&frontend_app, 0, sizeof(frontend_app));
    frontend_app_initialized = 0;

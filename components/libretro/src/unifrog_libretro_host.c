@@ -1,4 +1,5 @@
 #include "unifrog_libretro_internal.h"
+#include <unifrog/libretro_session.h>
 
 #ifdef UNIFROG_LIBRETRO_NATIVE_DLOPEN
 #include <dlfcn.h>
@@ -594,6 +595,98 @@ static void host_draw_battery_warning(uint32_t now_ms)
    unifrog_fb_flush_buffer(&host.presenter.fb, buffer);
 }
 
+static void host_draw_backlight_osd(uint32_t now_ms)
+{
+   struct unifrog_surface surface;
+   unsigned buffer;
+   int box_w = 152;
+   int box_h = 26;
+   int box_x;
+   int box_y = 8;
+   int bar_x;
+   int bar_y;
+   int bar_w = 136;
+   int fill_w;
+   char label[24];
+
+   if (!host.backlight_osd_active)
+      return;
+   if (!host.presenter_open)
+      return;
+   if ((int32_t)(host.backlight_osd_until_ms - now_ms) <= 0) {
+      host.backlight_osd_active = 0;
+      host.presenter.cleared_buffer_mask = 0;
+      return;
+   }
+   buffer = host.presenter.active_buffer;
+   surface = unifrog_fb_surface_for_buffer(&host.presenter.fb, buffer);
+   if (!surface.pixels || surface.width < (unsigned)box_w + 8u ||
+       surface.height < (unsigned)box_h + 16u)
+      return;
+   box_x = ((int)surface.width - box_w) / 2;
+   bar_x = box_x + 8;
+   bar_y = box_y + 18;
+   fill_w = (int)((unsigned)bar_w *
+      (host.backlight_osd_level > 100u ? 100u : host.backlight_osd_level) /
+      100u);
+   snprintf(label, sizeof(label), "Backlight %u%%",
+      host.backlight_osd_level > 100u ? 100u : host.backlight_osd_level);
+   unifrog_gfx_fill_rect(&surface, box_x, box_y, box_w, box_h,
+      UNIFROG_RGB565(18, 22, 28));
+   unifrog_gfx_fill_rect(&surface, box_x, box_y, box_w, 2,
+      UNIFROG_RGB565(238, 188, 70));
+   unifrog_gfx_draw_text(&surface, box_x + 8, box_y + 6, label,
+      UNIFROG_RGB565(245, 245, 240), 1);
+   unifrog_gfx_fill_rect(&surface, bar_x, bar_y, bar_w, 4,
+      UNIFROG_RGB565(56, 64, 74));
+   if (fill_w > 0)
+      unifrog_gfx_fill_rect(&surface, bar_x, bar_y, fill_w, 4,
+         UNIFROG_RGB565(238, 188, 70));
+   unifrog_fb_flush_buffer(&host.presenter.fb, buffer);
+}
+
+static void host_handle_backlight_hotkey(uint32_t now_ms)
+{
+   const uint32_t select_mask = UNIFROG_BUTTON_MASK(UNIFROG_BUTTON_SELECT);
+   const uint32_t l_mask = UNIFROG_BUTTON_MASK(UNIFROG_BUTTON_L);
+   const uint32_t r_mask = UNIFROG_BUTTON_MASK(UNIFROG_BUTTON_R);
+   uint32_t active = 0;
+   int delta = 0;
+
+   if ((host.buttons & select_mask) && !exit_combo_down()) {
+      if ((host.buttons & l_mask) && !(host.buttons & r_mask)) {
+         active = l_mask;
+         delta = -1;
+      } else if ((host.buttons & r_mask) && !(host.buttons & l_mask)) {
+         active = r_mask;
+         delta = 1;
+      }
+   }
+   if (!active) {
+      host.backlight_repeat_button = 0;
+      host.backlight_next_repeat_ms = 0;
+      return;
+   }
+   if (host.backlight_repeat_button != active) {
+      host.backlight_repeat_button = active;
+      host.backlight_next_repeat_ms = now_ms + 380u;
+   } else if ((int32_t)(now_ms - host.backlight_next_repeat_ms) >= 0) {
+      host.backlight_next_repeat_ms = now_ms + 140u;
+   } else {
+      return;
+   }
+   {
+      int level = unifrog_libretro_session_adjust(
+         UNIFROG_LIBRETRO_SESSION_BACKLIGHT, delta);
+
+      if (level >= 0) {
+         host.backlight_osd_level = (unsigned)level;
+         host.backlight_osd_until_ms = now_ms + 1200u;
+         host.backlight_osd_active = 1;
+      }
+   }
+}
+
 static void host_update_battery_warning(uint32_t now_ms)
 {
    if (now_ms - host.battery_check_ms >= 10000u) {
@@ -1069,6 +1162,7 @@ out_content_prepare:
          host_pace_begin();
          continue;
       }
+      host_handle_backlight_hotkey(unifrog_perf_time_ms());
 
       host_notify_audio_status();
       libretro_watchdog_enter(LIBRETRO_WATCHDOG_PHASE_RUN,
@@ -1086,7 +1180,12 @@ out_content_prepare:
             host.launch_core_id, host.launch_path);
          break;
       }
-      host_update_battery_warning(unifrog_perf_time_ms());
+      {
+         uint32_t osd_now = unifrog_perf_time_ms();
+
+         host_update_battery_warning(osd_now);
+         host_draw_backlight_osd(osd_now);
+      }
       run_count = unifrog_perf_elapsed(run_start, unifrog_perf_count());
       vsync_count = host.presenter_open && host.video_frames != video_before ?
          host.presenter.last_vsync_count : 0;

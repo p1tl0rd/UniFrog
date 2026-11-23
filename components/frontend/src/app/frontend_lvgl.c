@@ -198,7 +198,9 @@ static int is_button_token(const char *text, size_t len)
       (len == 5u && strncmp(text, "START", len) == 0) ||
       (len == 6u && strncmp(text, "SELECT", len) == 0) ||
       (len == 4u && strncmp(text, "MENU", len) == 0) ||
-      (len == 3u && strncmp(text, "L/R", len) == 0);
+      (len == 3u && strncmp(text, "L/R", len) == 0) ||
+      (len == 8u && strncmp(text, "SELECT+A", len) == 0) ||
+      (len == 10u && strncmp(text, "SELECT+L/R", len) == 0);
 }
 
 static void draw_footer_status(struct unifrog_ui *ui,
@@ -222,7 +224,7 @@ static void draw_footer_status(struct unifrog_ui *ui,
          break;
       if (is_button_token(p, len)) {
          int w = (int)len * 6 + 8;
-         char token[8];
+         char token[16];
 
          if (x + w >= max_x)
             break;
@@ -545,7 +547,7 @@ static void draw_shell(struct unifrog_ui *ui,
          style->footer_background, footer_alpha);
 
       if (style->theme_chrome)
-         unifrog_ui_text_clipped(ui, 10, footer_y + 7, 30,
+         unifrog_ui_text_clipped(ui, 10, footer_y + 7, 48,
             status ? status : "", color, 1);
       else
          draw_footer_status(ui, style, footer_y + 7, status, color,
@@ -872,7 +874,7 @@ int unifrog_frontend_lvgl_draw_launcher(struct unifrog_ui *ui,
          FRONTEND_LVGL_W, FRONTEND_LVGL_H);
    }
    draw_shell(ui, style, "UniFrog", detail,
-      status ? status : tr_label("A open  L/R page"));
+      status ? status : tr_label("A open  SELECT+L/R bright"));
    if (!fullscreen_launch_wallpaper) {
       draw_list_window(ui, style, selected, labels, values, glyphs,
          FRONTEND_LVGL_LAUNCH_COUNT);
@@ -902,7 +904,7 @@ int unifrog_frontend_lvgl_draw_menu(struct unifrog_ui *ui,
       selected = count - 1u;
    begin_frame(ui, style);
    draw_shell(ui, style, title ? title : "UniFrog", detail,
-      status ? status : tr_label("A select  B back"));
+      status ? status : tr_label("A select  B back  SELECT+L/R bright"));
    draw_list_window(ui, style, selected, labels, values, glyphs, count);
    frontend_lvgl.frame_seq++;
    {
@@ -982,7 +984,7 @@ int unifrog_frontend_lvgl_draw_list_preview(struct unifrog_ui *ui,
    if (description && description[0])
       draw_preview_text(ui, description, style.list_text);
    draw_shell(ui, &style, title ? title : "UniFrog", detail,
-      status ? status : tr_label("A select  B back"));
+      status ? status : tr_label("A select  B back  SELECT+L/R bright"));
    draw_list_window(ui, &style, selected, labels, values, glyphs, count);
    frontend_lvgl.frame_seq++;
    write_screenshot_if_requested(&surface, "preview");
