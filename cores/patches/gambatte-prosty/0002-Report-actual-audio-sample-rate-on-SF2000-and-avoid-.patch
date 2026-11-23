@@ -1,0 +1,61 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: UniFrog CI <ci@unifrog.local>
+Date: Tue, 24 Nov 2026 06:46:10 +0700
+Subject: [PATCH 2/2] Report actual audio sample rate on SF2000 and avoid
+ mktime in RTC latch
+
+---
+ libgambatte/libretro/libretro.cpp | 9 ---------
+ libgambatte/src/mem/rtc.cpp       | 5 +----
+ 2 files changed, 1 insertion(+), 13 deletions(-)
+
+diff --git a/libgambatte/libretro/libretro.cpp b/libgambatte/libretro/libretro.cpp
+index 359a555a09196ab51e577a2cb0a03fe8e86b1e57..3a0e8b2b0297a20f0f1baffb3ef1e58300fb576d 100644
+--- a/libgambatte/libretro/libretro.cpp
++++ b/libgambatte/libretro/libretro.cpp
+@@ -321,13 +321,8 @@ static void sf2000_draw_splash_screen(gambatte::video_pixel_t *video_buf)
+ /* Native GB/GBC hardware audio sample rate (~2 MHz) */
+ #define SOUND_SAMPLE_RATE_NATIVE  (VIDEO_REFRESH_RATE * (double)SOUND_SAMPLES_PER_FRAME)
+ 
+-#if !defined(SF2000)
+ #define SOUND_SAMPLE_RATE_CC      (SOUND_SAMPLE_RATE_NATIVE / CC_DECIMATION_RATE) /* ~64k */
+ #define SOUND_SAMPLE_RATE_BLIPPER (SOUND_SAMPLE_RATE_NATIVE / 64) /* ~32k */
+-#else
+-#define SOUND_SAMPLE_RATE_CC      (SOUND_SAMPLE_RATE_NATIVE / 65.536) /* 32000 */
+-#define SOUND_SAMPLE_RATE_BLIPPER (SOUND_SAMPLE_RATE_NATIVE / 65.536) /* 32000 */
+-#endif
+ 
+ /* GB::runFor() nominally generates up to
+  * (SOUND_SAMPLES_PER_RUN + 2064) samples, which
+@@ -2198,12 +2193,8 @@ void retro_get_system_av_info(struct retro_system_av_info *info)
+ #else
+    info->timing.fps            = VIDEO_REFRESH_RATE;
+ #endif
+-#if !defined(SF2000)
+    info->timing.sample_rate    = use_cc_resampler ?
+          SOUND_SAMPLE_RATE_CC : SOUND_SAMPLE_RATE_BLIPPER;
+-#else
+-   info->timing.sample_rate    = 32000;
+-#endif
+ }
+ 
+ static void check_system_specs(void)
+diff --git a/libgambatte/src/mem/rtc.cpp b/libgambatte/src/mem/rtc.cpp
+index 203150e4696276c3d466d5f63ad98c869cbf5d1f..97873e99af2f95a65db0804bdcc1873fd7326fc1 100644
+--- a/libgambatte/src/mem/rtc.cpp
++++ b/libgambatte/src/mem/rtc.cpp
+@@ -27,10 +27,7 @@ namespace gambatte
+    {
+       if (fake_rtc_is_enabled())
+       {
+-         struct tm fake_time;
+-         fake_rtc_get_time(&fake_time);
+-         uint64_t fake_timestamp = static_cast<uint64_t>(mktime(&fake_time));
+-         return fake_timestamp;
++         return fake_rtc_get_base_time();
+       }
+       else
+       {
+-- 
+2.43.0
+
