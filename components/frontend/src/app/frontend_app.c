@@ -583,6 +583,7 @@ static void loop_once(struct frontend_state *fe)
    uint32_t now = unifrog_perf_time_ms();
    int select_down;
    int combo_handled = 0;
+   int nav_handled;
 
    unifrog_ui_poll(&fe->ui);
    if (fe->shutdown_safe) {
@@ -676,7 +677,7 @@ static void loop_once(struct frontend_state *fe)
       combo_handled = 1;
    }
 
-   (void)frontend_input_handle_menu_navigation(fe, now, combo_handled);
+   nav_handled = frontend_input_handle_menu_navigation(fe, now, combo_handled);
    if (!combo_handled && unifrog_ui_pressed(&fe->ui, UNIFROG_UI_Y)) {
       if (fe->selected < fe->item_count &&
           fe->items[fe->selected].kind == FRONTEND_ITEM_GAME)
@@ -764,9 +765,11 @@ static void loop_once(struct frontend_state *fe)
       frontend_parent_view_clear(fe);
       show_config(fe);
    }
-   if (!combo_handled &&
+   if (!combo_handled && !nav_handled &&
        (unifrog_ui_pressed(&fe->ui, UNIFROG_UI_A) ||
-        unifrog_ui_pressed(&fe->ui, UNIFROG_UI_START)))
+        (unifrog_ui_pressed(&fe->ui, UNIFROG_UI_START) &&
+         !unifrog_ui_down(&fe->ui, UNIFROG_UI_UP) &&
+         !unifrog_ui_down(&fe->ui, UNIFROG_UI_DOWN))))
       activate(fe);
    if (fe->needs_draw)
       frontend_draw(fe);

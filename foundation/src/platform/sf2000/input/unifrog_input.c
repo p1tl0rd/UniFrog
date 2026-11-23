@@ -35,6 +35,7 @@
 #define KEY_SHIFTER_SETTLE_US 4u
 #define KEY_SHIFTER_CLOCK_LOW_US 3u
 #define KEY_SHIFTER_CLOCK_HIGH_US 3u
+#define KEY_SHIFTER_RESAMPLE_US 20u
 #define INPUT_DEBOUNCE_STABLE_POLLS 1
 #define INPUT_VALID_BUTTON_MASK ((1u << UNIFROG_BUTTON_COUNT) - 1u)
 
@@ -72,6 +73,8 @@ static uint32_t sf2000_fallback_candidate_norm;
 static unsigned sf2000_fallback_candidate_count;
 static int local_input_profile = -1;
 
+extern unsigned long arch_local_irq_save(void);
+extern void arch_local_irq_restore(unsigned long flags);
 extern unsigned long PINMUXL;
 extern unsigned long GPIOLCTRL;
 
@@ -213,13 +216,15 @@ void unifrog_input_restore_local_bus(void)
    gpio_configure(KEY_SHIFTER_PL1_PIN, GPIO_DIR_INPUT);
 }
 
-static uint32_t scan_gb300_local_raw(void)
+static uint32_t scan_gb300_local_raw_once(void)
 {
    uint32_t raw_mask = 0;
+   unsigned long flags;
 
    pinmux_configure(GB300_KEY_SHIFTER_CLK_PIN, PINMUX_L26_GPIO);
    pinmux_configure(GB300_KEY_SHIFTER_D0_PIN, PINMUX_L27_GPIO);
    pinmux_configure(GB300_KEY_SHIFTER_D1_PIN, PINMUX_L25_GPIO);
+   flags = arch_local_irq_save();
    gpio_configure(GB300_KEY_SHIFTER_CLK_PIN, GPIO_DIR_OUTPUT);
    gpio_configure(GB300_KEY_SHIFTER_D0_PIN, GPIO_DIR_OUTPUT);
    gpio_configure(GB300_KEY_SHIFTER_D1_PIN, GPIO_DIR_OUTPUT);
@@ -250,13 +255,15 @@ static uint32_t scan_gb300_local_raw(void)
       gpio_set_output(GB300_KEY_SHIFTER_CLK_PIN, 1);
       unifrog_perf_delay_us(KEY_SHIFTER_CLOCK_HIGH_US);
    }
+   arch_local_irq_restore(flags);
 
    return raw_mask;
 }
 
-static uint32_t scan_sf2000_local_raw(void)
+static uint32_t scan_sf2000_local_raw_once(void)
 {
    uint32_t raw_mask = 0;
+   unsigned long flags = arch_local_irq_save();
 
    gpio_configure(KEY_SHIFTER_CLK_PIN, GPIO_DIR_OUTPUT);
    gpio_set_output(KEY_SHIFTER_CLK_PIN, 1);
@@ -277,8 +284,40 @@ static uint32_t scan_sf2000_local_raw(void)
       gpio_set_output(KEY_SHIFTER_CLK_PIN, 1);
       unifrog_perf_delay_us(KEY_SHIFTER_CLOCK_HIGH_US);
    }
+   arch_local_irq_restore(flags);
 
    return raw_mask;
+}
+
+static uint32_t scan_local_raw_stable(uint32_t (*scan_once)(void))
+{
+   uint32_t s0 = scan_once();
+   uint32_t s1;
+   uint32_t s2;
+
+   if (!s0)
+      return 0;
+   unifrog_perf_delay_us(KEY_SHIFTER_RESAMPLE_US);
+   s1 = scan_once();
+   if (s0 == s1)
+      return s0;
+   unifrog_perf_delay_us(KEY_SHIFTER_RESAMPLE_US);
+   s2 = scan_once();
+   if (s2 == s1)
+      return s1;
+   if (s2 == s0)
+      return s0;
+   return s0 & s1 & s2;
+}
+
+static uint32_t scan_gb300_local_raw(void)
+{
+   return scan_local_raw_stable(scan_gb300_local_raw_once);
+}
+
+static uint32_t scan_sf2000_local_raw(void)
+{
+   return scan_local_raw_stable(scan_sf2000_local_raw_once);
 }
 
 static unsigned input_popcount(uint32_t mask)
