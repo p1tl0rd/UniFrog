@@ -8,14 +8,36 @@ set -eu
 
 probe="$BUILD/host-sanitize-probe"
 mkdir -p "$BUILD"
-if ! printf 'int main(void) { return 0; }\n' |
-	"$HOSTCC" -x c - -o "$probe" -fsanitize=address,undefined \
-		-fno-omit-frame-pointer >/dev/null 2>&1; then
-	echo "SKIP host sanitizers: $HOSTCC does not support them"
+
+probe_sanitize() {
+	flags=$1
 	rm -f "$probe"
-	exit 0
+	if ! printf 'int main(void) { return 0; }\n' |
+		"$HOSTCC" -x c - -o "$probe" "$flags" \
+			-fno-omit-frame-pointer >/dev/null 2>&1; then
+		rm -f "$probe"
+		return 1
+	fi
+	rc=0
+	if command -v timeout >/dev/null 2>&1; then
+		timeout 2 "$probe" >/dev/null 2>&1 || rc=$?
+	else
+		"$probe" >/dev/null 2>&1 || rc=$?
+	fi
+	rm -f "$probe"
+	return "$rc"
+}
+
+SANITIZE_FLAGS="-fsanitize=address,undefined"
+if ! probe_sanitize "$SANITIZE_FLAGS"; then
+	SANITIZE_FLAGS="-fsanitize=undefined"
+	if probe_sanitize "$SANITIZE_FLAGS"; then
+		echo "NOTE host sanitizers: ASan unavailable in this runtime, running UBSan only"
+	else
+		echo "SKIP host sanitizers: $HOSTCC does not support them"
+		exit 0
+	fi
 fi
-rm -f "$probe"
 
 binary="$BUILD/host-foundation-sanitize"
 sanitize_build_run() {
@@ -24,7 +46,7 @@ sanitize_build_run() {
 	"$HOSTCC" -std=c99 -O1 -g -Wall -Wextra -Iinclude -Itests/host \
 		-Ijs2300/include \
 		-I"$CORE_INCLUDE" \
-		-fsanitize=address,undefined -fno-omit-frame-pointer \
+		"$SANITIZE_FLAGS" -fno-omit-frame-pointer \
 		"$@" -o "$binary"
 	"$binary"
 }

@@ -7,7 +7,6 @@
 
 #ifndef UNIFROG_LIBRETRO_NATIVE_DLOPEN
 void *__dso_handle = &__dso_handle;
-#endif
 
 #define UNIFROG_STRONG
 #define UNIFROG_WEAK __attribute__((weak))
@@ -145,6 +144,7 @@ static const struct libretro_core_api gearboy_core =
    PREFIXED_LIBRETRO_CORE("gearboy", gearboy);
 static const struct libretro_core_api pce_fast_core =
    PREFIXED_LIBRETRO_CORE("pce-fast", pce_fast);
+#endif
 
 static int libretro_core_available(const struct libretro_core_api *core)
 {
@@ -167,11 +167,13 @@ static int libretro_core_available(const struct libretro_core_api *core)
       core->get_region;
 }
 
+#ifndef UNIFROG_LIBRETRO_NATIVE_DLOPEN
 static const struct libretro_core_api *libretro_core_if_available(
    const struct libretro_core_api *core)
 {
    return libretro_core_available(core) ? core : NULL;
 }
+#endif
 
 struct libretro_host host;
 static int experimental_sd_log_defer_begin(const char *tag)
@@ -1219,6 +1221,10 @@ static const char *libretro_canonical_core_id(const char *id)
 static const struct libretro_core_api *libretro_builtin_core_for_id(
    const char *id)
 {
+#ifdef UNIFROG_LIBRETRO_NATIVE_DLOPEN
+   (void)id;
+   return NULL;
+#else
    if (!id || !id[0])
       return NULL;
    if (strcmp(id, "gambatte") == 0)
@@ -1240,6 +1246,7 @@ static const struct libretro_core_api *libretro_builtin_core_for_id(
    if (strcmp(id, "pce-fast") == 0 || strcmp(id, "pce_fast") == 0)
       return libretro_core_if_available(&pce_fast_core);
    return NULL;
+#endif
 }
 
 #ifdef UNIFROG_LIBRETRO_NATIVE_DLOPEN

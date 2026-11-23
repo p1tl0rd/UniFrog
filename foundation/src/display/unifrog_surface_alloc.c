@@ -8,6 +8,7 @@
 #include <unifrog/log.h>
 #include <unifrog/perf.h>
 
+#if !defined(__linux__)
 #define SURFACE_ALLOC_TRACKED 64u
 #define SURFACE_ALLOC_MMZ_ID 0
 
@@ -22,9 +23,11 @@ struct tracked_surface {
 
 static struct tracked_surface mmz_surfaces[SURFACE_ALLOC_TRACKED];
 static unsigned mmz_alloc_count;
-static unsigned heap_alloc_count;
 static unsigned mmz_fail_logged;
+#endif
+static unsigned heap_alloc_count;
 
+#if !defined(__linux__)
 static int track_mmz(void *ptr, size_t size)
 {
    if (!ptr)
@@ -52,9 +55,14 @@ static int untrack_mmz(const void *ptr)
    }
    return 0;
 }
+#endif
 
 int unifrog_surface_is_mmz(const void *ptr)
 {
+#if defined(__linux__)
+   (void)ptr;
+   return 0;
+#else
    if (!ptr)
       return 0;
    for (unsigned i = 0; i < SURFACE_ALLOC_TRACKED; i++) {
@@ -62,6 +70,7 @@ int unifrog_surface_is_mmz(const void *ptr)
          return 1;
    }
    return 0;
+#endif
 }
 
 void *unifrog_surface_memalign(size_t alignment, size_t size)
@@ -73,6 +82,7 @@ void *unifrog_surface_memalign(size_t alignment, size_t size)
    if (size == 0)
       return NULL;
 
+#if !defined(__linux__)
    if (mmz_memalign) {
       ptr = mmz_memalign(SURFACE_ALLOC_MMZ_ID, alignment, size);
       if (ptr && track_mmz(ptr, size) == 0) {
@@ -92,6 +102,7 @@ void *unifrog_surface_memalign(size_t alignment, size_t size)
             (unsigned)alignment, (unsigned)size);
       }
    }
+#endif
 
    ptr = memalign(alignment, size);
    if (ptr) {
@@ -109,10 +120,12 @@ void unifrog_surface_free(void *ptr)
 {
    if (!ptr)
       return;
+#if !defined(__linux__)
    if (untrack_mmz(ptr)) {
       if (mmz_free)
          mmz_free(SURFACE_ALLOC_MMZ_ID, ptr);
       return;
    }
+#endif
    free(ptr);
 }
