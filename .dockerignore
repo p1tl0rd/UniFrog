@@ -1,0 +1,15 @@
+.git
+.deps
+.deps*
+.ccache
+build
+output
+sdcard-package
+toolchain
+cores/build
+cores/output
+frontend/output
+*.asd
+*.zip
+*.bin
+*.out

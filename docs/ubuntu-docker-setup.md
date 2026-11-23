@@ -7,36 +7,19 @@ Docker) and Ubuntu 22.04 without root-only assumptions.
 
 ```sh
 sudo apt-get update && sudo apt-get install -y \
-  git make gcc g++ perl device-tree-compiler tcc zlib1g-dev \
-  ccache curl xz-utils zip pkg-config libxcb1-dev ripgrep ca-certificates
+  git make gcc g++ patch perl device-tree-compiler zlib1g-dev \
+  ccache curl xz-utils zip unzip pkg-config libxcb1-dev ripgrep ca-certificates
 ```
 
-`make deps-ubuntu` prints the same package list. `tcc` speeds up host checks;
-if absent, `HOSTCC` automatically falls back to `gcc`.
+On Ubuntu 24.04, `tcc` (0.9.27) rejects `-INFINITY` initializers in `js2300`, so
+prefer `HOSTCC=gcc` (or omit `tcc`).
 
 ## 2. Ubuntu 24.04 Docker Setup
 
-Save a minimal image locally (keep Dockerfiles untracked unless shared):
-
-```dockerfile
-FROM ubuntu:24.04
-
-ENV DEBIAN_FRONTEND=noninteractive
-RUN apt-get update && apt-get install -y --no-install-recommends \
-      ca-certificates ccache curl device-tree-compiler g++ gcc git \
-      libxcb1-dev make perl pkg-config ripgrep tcc xz-utils zip zlib1g-dev \
-    && rm -rf /var/lib/apt/lists/*
-
-# Reuse the built-in non-root `ubuntu` user (UID/GID 1000) to avoid root-owned
-# files in the bind-mounted workspace.
-USER ubuntu
-WORKDIR /workspace/UniFrog
-```
-
-Build and run the container with the repo and ccache mounted:
+Build the reproducible image from the repository root [Dockerfile](../Dockerfile):
 
 ```sh
-docker build -t unifrog-dev -f Dockerfile.ubuntu24 .
+docker build -t unifrog-dev .
 
 docker run --rm -it \
   -v "$PWD:/workspace/UniFrog" \
@@ -90,7 +73,7 @@ make CORE=quicknes JOBS=$(nproc)
 
 # Full SD-card release zip (includes slow cores: fbalpha2012, mame2000,
 # gpsp, gpsp-gbac-prosty, picodrive, qpsx)
-make -C cores deps FAST_BUILD=0 JOBS=$(nproc)
+make -C cores init FAST_BUILD=0 JOBS=$(nproc)
 make sd-zip JOBS=$(nproc)
 ```
 
