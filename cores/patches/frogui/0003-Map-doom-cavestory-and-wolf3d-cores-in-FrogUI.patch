@@ -1,0 +1,38 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: UniFrog Builder <unifrog@local>
+Date: Tue, 24 Nov 2026 13:59:25 +0700
+Subject: [PATCH 3/3] Map doom, cavestory, and wolf3d cores in FrogUI
+
+---
+ frogui_libretro.c | 8 +++++++-
+ 1 file changed, 7 insertions(+), 1 deletion(-)
+
+diff --git a/frogui_libretro.c b/frogui_libretro.c
+index 1b6e145f9a19aff59280a5decc708a31bbe0d1db..54902294bc47dc61c915fc8b398075d5832db52d 100644
+--- a/frogui_libretro.c
++++ b/frogui_libretro.c
+@@ -48,7 +48,8 @@ static const ConsoleMapping console_mappings[] = {
+     {"pce", "pce-fast"}, {"ngpc", "race"}, {"wswan", "beetle-cygne"},
+     {"col", "gearcoleco"}, {"msx", "bluemsx-prosty"},
+     {"c64", "frodo-prosty"}, {"fake08", "fake08-prosty"},
+-    {"pico8", "fake08-prosty"}, {"m2k", "mame2000"}, {"fba", "fbalpha2012"},
++    {"pico8", "fake08-prosty"}, {"doom", "prboom"}, {"cavestory", "nxengine"},
++    {"wolf3d", "ecwolf"}, {"m2k", "mame2000"}, {"fba", "fbalpha2012"},
+     {NULL, NULL}
+ };
+ 
+@@ -180,6 +181,11 @@ static const char *core_for_game(const char *folder, const char *filename)
+     ext = strrchr(filename, '.');
+     if (!ext) return NULL;
+     if (!strcasecmp(ext, ".p8")) return "fake08-prosty";
++    if (!strcasecmp(ext, ".wad") || !strcasecmp(ext, ".iwad") || !strcasecmp(ext, ".pwad")) return "prboom";
++    if (!strcasecmp(ext, ".exe")) return "nxengine";
++    if (!strcasecmp(ext, ".wl6") || !strcasecmp(ext, ".wl1") ||
++        !strcasecmp(ext, ".sod") || !strcasecmp(ext, ".sdm") ||
++        !strcasecmp(ext, ".n3d")) return "ecwolf";
+     if (!strcasecmp(ext, ".nes") || !strcasecmp(ext, ".fds")) return "fceumm";
+     if (!strcasecmp(ext, ".sfc") || !strcasecmp(ext, ".smc")) return "snes9x2005";
+     if (!strcasecmp(ext, ".gb") || !strcasecmp(ext, ".gbc")) return "gambatte";
+-- 
+2.43.0
+

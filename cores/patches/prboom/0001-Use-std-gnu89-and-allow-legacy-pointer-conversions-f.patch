@@ -1,0 +1,28 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: UniFrog Builder <unifrog@local>
+Date: Tue, 24 Nov 2026 14:02:26 +0700
+Subject: [PATCH] Use -std=gnu89 and allow legacy pointer conversions for
+ SF2000 GCC
+
+---
+ Makefile | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/Makefile b/Makefile
+index 62c32a8db3b9c244e2f4857197ea34134680bf13..cd4c1e7504e29c034c15ee3075b4edf2844c3e90 100644
+--- a/Makefile
++++ b/Makefile
+@@ -294,7 +294,7 @@ else ifeq ($(platform), sf2000)
+ 	# -ffreestanding
+ 	CFLAGS+=-I../..
+ 	CFLAGS+=-DSF2000 -DHAVE_STRL
+-    CFLAGS+= -DHAVE_STRLWR
++	CFLAGS+= -DHAVE_STRLWR -std=gnu89 -Wno-error=incompatible-pointer-types
+ 	CXXFLAGS=$(CFLAGS) -fno-use-cxa-atexit
+ 	STATIC_LINKING = 1
+ 	HAVE_LOW_MEMORY = 1
+
+base-commit: 288f89dbb5912c5a920b2e3d392a85a8061fc817
+-- 
+2.43.0
+

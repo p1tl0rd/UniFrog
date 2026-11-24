@@ -76,6 +76,9 @@ upstream checkouts plus generated UniFrog patch queues under `cores/patches/`.
 | Fake-08 Prosty | `.deps/cores/fake-08-prosty` | MIT with bundled MIT, WTFPL, zlib, and other component terms. See `LICENSE.MD` and bundled library notices. |
 | blueMSX Prosty | `.deps/cores/libretro-blueMSX-prosty` | Mixed BSD-style, GPL, freeware, and component terms. See `license.txt` and source headers. |
 | FCEUmm Prosty | `.deps/cores/libretro-fceumm-prosty` | GPL-2.0. See `Copying`; NTSC filter code has its own notice. |
+| PrBoom | `.deps/cores/libretro-prboom` | GPL-2.0. See `COPYING`. |
+| NXEngine | `.deps/cores/libretro-nxengine` | GPL-3.0. See `nxengine/LICENSE`. |
+| ECWolf | `.deps/cores/ecwolf` | GPL-2.0. See `docs/license-gpl.txt` and component notices. |
 
 ## Assets
 

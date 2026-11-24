@@ -61,6 +61,12 @@ static const struct system_core system_cores[] = {
    { "MSX", "bluemsx-prosty" },
    { "C64", "frodo-prosty" },
    { "PICO8", "fake08-prosty" },
+   { "DOOM", "prboom" },
+   { "PRBOOM", "prboom" },
+   { "CAVESTORY", "nxengine" },
+   { "NXENGINE", "nxengine" },
+   { "WOLF3D", "ecwolf" },
+   { "ECWOLF", "ecwolf" },
 };
 
 static size_t cycle_index(const int *values, size_t count, int current,

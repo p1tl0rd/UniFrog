@@ -33,13 +33,22 @@
    - `cores/patches/snes9x2005-prosty/0002-Enable-SF2000-arithmetic-opts-O3-RAM-ROM-load-and-di.patch`: enabled `-DSF2000_ARITHMETIC_OPTS`, `-O3`, `LOAD_FROM_MEMORY = 1`, and disabled conflicting `SEL+L`/`SEL+R` core hotkeys.
    - `cores/patches/snes9x2002-prosty/0002-Use-22050-Hz-native-audio-rate-and-disable-conflicti.patch`: raised `AUDIO_SAMPLE_RATE` to `22050` Hz (supported natively without resampling by `host_audio_output_rate()`) and disabled conflicting `SEL+L`/`SEL+R` hotkeys.
    - `components/libretro/src/unifrog_libretro_runtime.c` (`host_get_variable()`): wired UniFrog's `frameskip` (`OFF` / `AUTO` / `FIXED_1` / `FIXED_2` and fast-forward) to `snes9x_2005_frameskip` / `snes9x_2005_frameskip_threshold` and `snes9x2002_frameskip` / `snes9x2002_frameskip_threshold` / `snes9x2002_frameskip_interval`.
+8. **Added Native Cores: `prboom` (Doom 1/2), `nxengine` (Cave Story), & `ecwolf` (Wolfenstein 3D):**
+   - `cores/manifest.mk`: pinned `madcock/libretro-prboom`, `madcock/libretro-nxengine`, and `madcock/ecwolf` with SF2000 platform ports (`CORE_PACKAGE_SPECS`, `CORE_LICENSE_SPECS`, `DEFAULT_CORE_IDS`), and updated `THIRD_PARTY.md`.
+   - `cores/Makefile`: registered `SF2000_PORT_SPECS`, added `$(BUILD)/libretro-common/file/retro_dirent.o` to `LIBRETRO_COMMON_OBJECTS` (needed for `ecwolf` VFS/dirent directory listing under `STATIC_LINKING=1`), and restricted `ecwolf` `submodule update --init` to `src/libretro/libretro-common` (skipping unused Bitbucket SDL submodules).
+   - `cores/patches/prboom/0001-Use-std-gnu89-and-allow-legacy-pointer-conversions-f.patch`: added `-std=gnu89 -Wno-error=incompatible-pointer-types` for SF2000 GCC compatibility in `d_deh.c` / `m_cheat.c`.
+   - `components/frontend/assets/defaults/associations.ini`, `components/libretro/src/unifrog_libretro_policy.c`, and `cores/patches/frogui/0003-Map-doom-cavestory-and-wolf3d-cores-in-FrogUI.patch`: mapped `.wad`/`.iwad`/`.pwad`, `.exe`, `.wl6`/`.wl1`/`.sod`/`.sdm`/`.n3d` and system folder names (`DOOM`, `CAVESTORY`, `WOLF3D`).
 
 ## Build & Verification
 - Verified inside `unifrog-dev:latest`:
-  - `make dep-patches-check DEP=frogui`, `DEP=snes9x2005-prosty`, `DEP=snes9x2002-prosty` (OK)
+  - `make dep-patches-check DEP=frogui`, `DEP=prboom` (and earlier `snes9x2005-prosty`, `snes9x2002-prosty`) (OK)
   - `make core-manifest-check` (OK)
   - `make clean && make verify JOBS=12` (required after core patch/Makefile changes).
 
 ## SD Card Deployment Notes (`/media/two/C2B3-81CF`)
-- Representative free PICO-8 carts installed to `/ROMS/pico8/` (`rom_system=pico8:fake08-prosty` added to `/unifrog_data/unifrog.ini`, and `snes9x_2005_frameskip=auto` fixed under `[core-options.snes9x2005-prosty]`).
-- Updated `bisrv.asd`, `unifrog.bin`, `manifest.ini`, and rebuilt `{frogui,snes9x2005-prosty,snes9x2002-prosty}.bin` deployed to `/media/two/C2B3-81CF` without touching slow cores or user saves.
+- Representative free PICO-8 carts installed to `/ROMS/pico8/` (`rom_system=pico8:fake08-prosty`).
+- Official Shareware/Freeware assets installed on SD:
+  - Doom Shareware (`/ROMS/doom/Doom/doom1.wad` + `bios/prboom.wad`)
+  - Cave Story Freeware (`/ROMS/cavestory/Cave Story (en)/Doukutsu.exe`)
+  - Wolfenstein 3D v1.4 Shareware (`/ROMS/wolf3d/Wolfenstein 3D v1.4 (Shareware)/VSWAP.WL1` + `bios/ecwolf.pk3`)
+- Updated `bisrv.asd`, `unifrog.bin`, `manifest.ini`, and rebuilt `{frogui,snes9x2005-prosty,snes9x2002-prosty,prboom,nxengine,ecwolf}.bin` deployed to `/media/two/C2B3-81CF` without touching slow cores or user saves.

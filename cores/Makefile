@@ -230,6 +230,7 @@ LIBRETRO_COMMON_OBJECTS := \
 	$(BUILD)/libretro-common/encodings/encoding_utf.o \
 	$(BUILD)/libretro-common/file/file_path.o \
 	$(BUILD)/libretro-common/file/file_path_io.o \
+	$(BUILD)/libretro-common/file/retro_dirent.o \
 	$(BUILD)/libretro-common/formats/png/rpng.o \
 	$(BUILD)/libretro-common/libco/libco.o \
 	$(BUILD)/libretro-common/streams/file_stream.o \
@@ -317,7 +318,10 @@ SF2000_PORT_SPECS := \
 	frodo-prosty:$(CORE_SOURCE_ROOT)/libretro-frodo-prosty:Makefile.libretro:frodo_libretro_sf2000.a:frodo_prosty_libretro_sf2000.a:frodo_prosty \
 	fake08-prosty:$(CORE_SOURCE_ROOT)/fake-08-prosty/platform/libretro:Makefile:fake08_libretro_sf2000.a:fake08_prosty_libretro_sf2000.a:fake08_prosty \
 	bluemsx-prosty:$(CORE_SOURCE_ROOT)/libretro-blueMSX-prosty:Makefile.libretro:bluemsx_libretro_sf2000.a:bluemsx_prosty_libretro_sf2000.a:bluemsx_prosty \
-	fceumm-prosty:$(CORE_SOURCE_ROOT)/libretro-fceumm-prosty:Makefile.libretro:fceumm_libretro_sf2000.a:fceumm_prosty_libretro_sf2000.a:fceumm_prosty
+	fceumm-prosty:$(CORE_SOURCE_ROOT)/libretro-fceumm-prosty:Makefile.libretro:fceumm_libretro_sf2000.a:fceumm_prosty_libretro_sf2000.a:fceumm_prosty \
+	prboom:$(CORE_SOURCE_ROOT)/libretro-prboom:Makefile:prboom_libretro_sf2000.a:prboom_libretro_sf2000.a:prboom \
+	nxengine:$(CORE_SOURCE_ROOT)/libretro-nxengine:Makefile:nxengine_libretro_sf2000.a:nxengine_libretro_sf2000.a:nxengine \
+	ecwolf:$(CORE_SOURCE_ROOT)/ecwolf/src/libretro:Makefile:ecwolf_libretro_sf2000.a:ecwolf_libretro_sf2000.a:ecwolf
 
 SF2000_PORT_TARGETS := $(foreach spec,$(SF2000_PORT_SPECS),$(word 1,$(subst :, ,$(spec))))
 
@@ -602,6 +606,8 @@ core-init:
 				git -C "$$dr_dir" checkout -q "$$dr_commit"; \
 				git -C "$$dr_dir" reset --hard -q "$$dr_commit"; \
 				git -C "$$dr_dir" clean -fdx -q; \
+			elif test "$$name" = ecwolf; then \
+				git -C "$$dir" submodule update --init --depth 1 $$sub_filter_arg --jobs "$(JOBS)" -- src/libretro/libretro-common; \
 			else \
 				git -C "$$dir" submodule update --init --depth 1 $$sub_filter_arg --jobs "$(JOBS)"; \
 			fi; \

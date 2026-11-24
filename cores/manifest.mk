@@ -48,7 +48,10 @@ CORE_SPECS := \
 	'frodo-prosty|$(CORE_SOURCE_ROOT)/libretro-frodo-prosty|https://github.com/tzubertowski/libretro-frodo.git|head|e2de1193e420f00c3eb65a1182bb31aa58fdfebb|e2de1193e420f00c3eb65a1182bb31aa58fdfebb|patches/frodo-prosty|.' \
 	'fake08-prosty|$(CORE_SOURCE_ROOT)/fake-08-prosty|https://github.com/tzubertowski/fake-08.git|head|b87983eaf7492fdd945f2897024e0bb725e1e15d|b87983eaf7492fdd945f2897024e0bb725e1e15d|patches/fake08-prosty|.' \
 	'bluemsx-prosty|$(CORE_SOURCE_ROOT)/libretro-blueMSX-prosty|https://github.com/tzubertowski/libretro-blueMSX.git|head|0b47ea3e7370bab5766eaa7c470d21247da3764a|0b47ea3e7370bab5766eaa7c470d21247da3764a|patches/bluemsx-prosty|.' \
-	'fceumm-prosty|$(CORE_SOURCE_ROOT)/libretro-fceumm-prosty|https://github.com/tzubertowski/libretro-fceumm.git|head|e6111e684e7a7761f3f1d6c80d0a825e2c8cdc7e|e6111e684e7a7761f3f1d6c80d0a825e2c8cdc7e|-|.'
+	'fceumm-prosty|$(CORE_SOURCE_ROOT)/libretro-fceumm-prosty|https://github.com/tzubertowski/libretro-fceumm.git|head|e6111e684e7a7761f3f1d6c80d0a825e2c8cdc7e|e6111e684e7a7761f3f1d6c80d0a825e2c8cdc7e|-|.' \
+	'prboom|$(CORE_SOURCE_ROOT)/libretro-prboom|https://github.com/madcock/libretro-prboom.git|head|288f89dbb5912c5a920b2e3d392a85a8061fc817|288f89dbb5912c5a920b2e3d392a85a8061fc817|patches/prboom|.' \
+	'nxengine|$(CORE_SOURCE_ROOT)/libretro-nxengine|https://github.com/madcock/libretro-nxengine.git|head|34366d14cc8d143df814fc6e6373b4d688ccc9b3|34366d14cc8d143df814fc6e6373b4d688ccc9b3|-|.' \
+	'ecwolf|$(CORE_SOURCE_ROOT)/ecwolf|https://github.com/madcock/ecwolf.git|head|e40256b067fe9de686b9abfba082ed8e0e309f01|e40256b067fe9de686b9abfba082ed8e0e309f01|-|.'
 
 # Patch queues for source repositories pinned as submodules by a core fork.
 # parent-core|submodule-path|pinned-commit|patch-dir
@@ -87,7 +90,10 @@ CORE_PACKAGE_SPECS := \
 	frodo-prosty:FRODO_PROSTY:frodo-prosty:frodo-prosty:frodo_prosty:d64\|t64\|x64\|p00\|prg:frodo_prosty:- \
 	fake08-prosty:FAKE08_PROSTY:fake08-prosty:fake08-prosty:fake08_prosty:p8:fake08_prosty:- \
 	bluemsx-prosty:BLUEMSX_PROSTY:bluemsx-prosty:bluemsx-prosty:bluemsx_prosty:rom\|mx1\|mx2\|dsk\|cas:bluemsx_prosty:- \
-	fceumm-prosty:FCEUMM_PROSTY:fceumm-prosty:fceumm-prosty:fceumm_prosty:nes\|fds:fceumm_prosty:-
+	fceumm-prosty:FCEUMM_PROSTY:fceumm-prosty:fceumm-prosty:fceumm_prosty:nes\|fds:fceumm_prosty:- \
+	prboom:PRBOOM:prboom:prboom:prboom:wad\|iwad\|pwad\|lmp:prboom:- \
+	nxengine:NXENGINE:nxengine:nxengine:nxengine:exe:nxengine:- \
+	ecwolf:ECWOLF:ecwolf:ecwolf:ecwolf:wl6\|wl1\|sod\|sdm\|n3d\|pk3:ecwolf:-
 
 # License material copied verbatim beside packaged core modules. Keep the
 # destination names stable so SD artifacts remain auditable without fetching
@@ -123,14 +129,17 @@ CORE_LICENSE_SPECS := \
 	frodo-prosty|$(CORE_SOURCE_ROOT)/libretro-frodo-prosty/COPYING|frodo-prosty-COPYING \
 	fake08-prosty|$(CORE_SOURCE_ROOT)/fake-08-prosty/LICENSE.MD|fake08-prosty-LICENSE.md \
 	bluemsx-prosty|$(CORE_SOURCE_ROOT)/libretro-blueMSX-prosty/license.txt|bluemsx-prosty-license.txt \
-	fceumm-prosty|$(CORE_SOURCE_ROOT)/libretro-fceumm-prosty/Copying|fceumm-prosty-COPYING
+	fceumm-prosty|$(CORE_SOURCE_ROOT)/libretro-fceumm-prosty/Copying|fceumm-prosty-COPYING \
+	prboom|$(CORE_SOURCE_ROOT)/libretro-prboom/COPYING|prboom-COPYING \
+	nxengine|$(CORE_SOURCE_ROOT)/libretro-nxengine/nxengine/LICENSE|nxengine-LICENSE \
+	ecwolf|$(CORE_SOURCE_ROOT)/ecwolf/docs/license-gpl.txt|ecwolf-LICENSE
 
 DEFAULT_CORE_IDS := gambatte gpsp gpsp-gbac-prosty picodrive snes9x2005 \
 	snes9x2002 quicknes fceumm gearboy pce-fast qpsx frogui \
 	mame2000 fbalpha2012 stella2014 a5200 prosystem atari800lib handy race \
 	beetle-cygne gearcoleco snes9x2005-prosty snes9x2002-prosty \
 	gambatte-prosty quicknes-prosty frodo-prosty fake08-prosty \
-	bluemsx-prosty fceumm-prosty
+	bluemsx-prosty fceumm-prosty prboom nxengine ecwolf
 
 # Clean rebuilds of these cores cost far more than the rest combined
 # (benchmarked with a warm ccache, -j9: fbalpha2012 and mame2000 run for
