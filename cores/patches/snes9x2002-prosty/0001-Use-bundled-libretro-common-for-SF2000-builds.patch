@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: UniFrog CI <unifrog@example.invalid>
 Date: Mon, 22 Jun 2026 05:10:39 +0000
-Subject: [PATCH] Use bundled libretro-common for SF2000 builds
+Subject: [PATCH 1/2] Use bundled libretro-common for SF2000 builds
 
 ---
  Makefile        | 2 +-
@@ -34,5 +34,5 @@ index a6dff3402c0712e11ab61986c8d15cf4a3fa3e42..fbadd3cd3829ee162cb9186ce60cb6c4
 
 base-commit: 864c7d26b6bc42f7d648d1ba68dfc37520878629
 -- 
-2.54.0
+2.43.0
 

@@ -1,0 +1,58 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: UniFrog Builder <unifrog@local>
+Date: Tue, 24 Nov 2026 13:41:56 +0700
+Subject: [PATCH 2/2] Use 22050 Hz native audio rate and disable conflicting
+ SEL+L/R hotkeys
+
+---
+ libretro/libretro.c | 26 +++++---------------------
+ 1 file changed, 5 insertions(+), 21 deletions(-)
+
+diff --git a/libretro/libretro.c b/libretro/libretro.c
+index 7f07f06b663db50622ff919b3b944338dd12fce8..98fc5a5bb0b1c560e9931d0fe8ce5ef3d80d34ff 100644
+--- a/libretro/libretro.c
++++ b/libretro/libretro.c
+@@ -309,7 +309,7 @@ static void retro_set_audio_buff_status_cb(void)
+ #if !defined(SF2000)
+ #define AUDIO_SAMPLE_RATE       32040
+ #else
+-#define AUDIO_SAMPLE_RATE       11025
++#define AUDIO_SAMPLE_RATE       22050
+ #endif
+ 
+ static int16_t *audio_out_buffer       = NULL;
+@@ -771,27 +771,11 @@ void retro_run (void)
+ 
+    /* Universal Hotkeys */
+    bool sel_pressed = input_cb(0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_SELECT);
+-   bool r_pressed = input_cb(0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_R);
+-   bool l_pressed = input_cb(0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_L);
+    bool a_pressed = input_cb(0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_A);
+-   
+-   /* SEL + R to toggle transparency effects */
+-   if (sel_pressed && r_pressed && !sel_r_pressed) {
+-      Settings.DisableTransparency = !Settings.DisableTransparency;
+-      transparency_indicator_timer = 180; /* 3 seconds at 60fps */
+-      sel_r_pressed = true;
+-   } else if (!sel_pressed || !r_pressed) {
+-      sel_r_pressed = false;
+-   }
+-   
+-   /* SEL + L to toggle audio mute */
+-   if (sel_pressed && l_pressed && !sel_l_pressed) {
+-      hotkey_audio_disabled = !hotkey_audio_disabled;
+-      audio_indicator_timer = 180; /* 3 seconds at 60fps */
+-      sel_l_pressed = true;
+-   } else if (!sel_pressed || !l_pressed) {
+-      sel_l_pressed = false;
+-   }
++
++   /* SEL+R and SEL+L are reserved for UniFrog's hardware backlight shortcut. */
++   sel_r_pressed = false;
++   sel_l_pressed = false;
+    
+    /* SEL + A to cycle frameskip */
+    if (sel_pressed && a_pressed && !sel_a_pressed) {
+-- 
+2.43.0
+

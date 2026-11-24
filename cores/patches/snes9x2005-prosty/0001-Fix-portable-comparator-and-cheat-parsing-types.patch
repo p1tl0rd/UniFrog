@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: UniFrog CI <unifrog@example.invalid>
 Date: Mon, 22 Jun 2026 05:10:39 +0000
-Subject: [PATCH] Fix portable comparator and cheat parsing types
+Subject: [PATCH 1/2] Fix portable comparator and cheat parsing types
 
 ---
  source/cheats.c | 13 +++++++------
@@ -94,5 +94,5 @@ index db68e1ee3eb5fb3c3c467a8766614ea2cedef3b1..5bd36b30b4876189aa24ed02100d3460
 
 base-commit: fa25aaf57a043e999f1bc3d9327a71c4cdb1d942
 -- 
-2.54.0
+2.43.0
 

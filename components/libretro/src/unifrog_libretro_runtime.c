@@ -1440,6 +1440,83 @@ static bool host_get_variable(struct retro_variable *var)
          return true;
       }
    }
+   if (host.core_id && (strcmp(host.core_id, "snes9x2005") == 0 ||
+       strcmp(host.core_id, "snes9x2005-prosty") == 0)) {
+      if (strcmp(var->key, "snes9x_2005_frameskip") == 0) {
+         if ((host.fast_forward && host.fast_forward_multiplier > 1) ||
+             host.options.frameskip == UNIFROG_LIBRETRO_FRAMESKIP_AUTO ||
+             host.options.frameskip == UNIFROG_LIBRETRO_FRAMESKIP_FIXED_1 ||
+             host.options.frameskip == UNIFROG_LIBRETRO_FRAMESKIP_FIXED_2)
+            var->value = "manual";
+         else
+            var->value = "disabled";
+         printf("unifrog libretro variable %s=%s\n", var->key, var->value);
+         return true;
+      }
+      if (strcmp(var->key, "snes9x_2005_frameskip_threshold") == 0) {
+         if (host.fast_forward && host.fast_forward_multiplier > 1)
+            var->value = "60";
+         else if (host.options.frameskip == UNIFROG_LIBRETRO_FRAMESKIP_AUTO)
+            var->value = "50";
+         else if (host.options.frameskip == UNIFROG_LIBRETRO_FRAMESKIP_FIXED_2)
+            var->value = "60";
+         else if (host.options.frameskip == UNIFROG_LIBRETRO_FRAMESKIP_FIXED_1)
+            var->value = "50";
+         else
+            var->value = "33";
+         printf("unifrog libretro variable %s=%s\n", var->key, var->value);
+         return true;
+      }
+   }
+   if (host.core_id && (strcmp(host.core_id, "snes9x2002") == 0 ||
+       strcmp(host.core_id, "snes9x2002-prosty") == 0)) {
+      if (strcmp(var->key, "snes9x2002_frameskip") == 0) {
+         if (host.fast_forward && host.fast_forward_multiplier > 1)
+            var->value = "fixed_interval";
+         else if (host.options.frameskip == UNIFROG_LIBRETRO_FRAMESKIP_AUTO)
+            var->value = "auto_threshold";
+         else if (host.options.frameskip == UNIFROG_LIBRETRO_FRAMESKIP_FIXED_1 ||
+                  host.options.frameskip == UNIFROG_LIBRETRO_FRAMESKIP_FIXED_2)
+            var->value = "fixed_interval";
+         else
+            var->value = "disabled";
+         printf("unifrog libretro variable %s=%s\n", var->key, var->value);
+         return true;
+      }
+      if (strcmp(var->key, "snes9x2002_frameskip_threshold") == 0) {
+         var->value = "60";
+         printf("unifrog libretro variable %s=%s\n", var->key, var->value);
+         return true;
+      }
+      if (strcmp(var->key, "snes9x2002_frameskip_interval") == 0) {
+         if (host.fast_forward && host.fast_forward_multiplier > 1) {
+            switch (sanitize_fast_forward_multiplier(
+               host.fast_forward_multiplier)) {
+            case 16:
+               var->value = "15";
+               break;
+            case 8:
+               var->value = "7";
+               break;
+            case 4:
+               var->value = "3";
+               break;
+            default:
+               var->value = "1";
+               break;
+            }
+         } else if (host.options.frameskip ==
+             UNIFROG_LIBRETRO_FRAMESKIP_FIXED_2)
+            var->value = "2";
+         else if (host.options.frameskip ==
+                  UNIFROG_LIBRETRO_FRAMESKIP_FIXED_1)
+            var->value = "1";
+         else
+            var->value = "0";
+         printf("unifrog libretro variable %s=%s\n", var->key, var->value);
+         return true;
+      }
+   }
 
    option_index = core_option_find(var->key);
    if (option_index >= 0) {

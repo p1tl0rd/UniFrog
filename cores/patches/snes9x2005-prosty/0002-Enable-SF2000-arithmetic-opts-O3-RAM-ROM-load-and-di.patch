@@ -1,0 +1,85 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: UniFrog Builder <unifrog@local>
+Date: Tue, 24 Nov 2026 13:41:56 +0700
+Subject: [PATCH 2/2] Enable SF2000 arithmetic opts, -O3, RAM ROM load, and
+ disable conflicting SEL+L/R hotkeys
+
+---
+ Makefile   |  6 ++++--
+ libretro.c | 26 ++++++--------------------
+ 2 files changed, 10 insertions(+), 22 deletions(-)
+
+diff --git a/Makefile b/Makefile
+index 5cb739c1d319dbf491aa671254a8f4bfc1b05144..1ff1141903ab099feced818c2c1824c25f9131d4 100644
+--- a/Makefile
++++ b/Makefile
+@@ -286,8 +286,8 @@ else ifeq ($(platform), sf2000)
+     CFLAGS =-EL -march=mips32 -mtune=mips32 -msoft-float -ffast-math -fomit-frame-pointer
+     CFLAGS+=-G0 -mno-abicalls -fno-pic
+ #	-ffreestanding
+-    CFLAGS+=-DSF2000
+-    LOAD_FROM_MEMORY = 0
++    CFLAGS+=-DSF2000 -DSF2000_ARITHMETIC_OPTS
++    LOAD_FROM_MEMORY = 1
+     STATIC_LINKING = 1
+ 	
+ # MIYOO
+@@ -591,6 +591,8 @@ endif
+ 
+ ifeq ($(DEBUG),1)
+ 	FLAGS += -O0 -g
++else ifeq ($(platform), sf2000)
++	FLAGS += -O3 -DNDEBUG
+ else
+ 	FLAGS += -O2 -DNDEBUG
+ endif
+diff --git a/libretro.c b/libretro.c
+index fe06837415a28ec563e70819833b21c082b3e0f8..45ff6bb56c2a7770eb3c840fa8ac536b2602a811 100644
+--- a/libretro.c
++++ b/libretro.c
+@@ -68,8 +68,10 @@ int one_c, slow_one_c, two_c;
+ #define AUDIO_SAMPLE_RATE       32040
+ #else
+ #define AUDIO_SAMPLE_RATE       22050
++#ifndef SF2000_ARITHMETIC_OPTS
+ #define SF2000_ARITHMETIC_OPTS  1
+ #endif
++#endif
+ 
+ static int16_t *audio_out_buffer       = NULL;
+ #ifdef USE_BLARGG_APU
+@@ -764,27 +766,11 @@ void retro_run(void)
+ 
+    /* Universal Hotkeys */
+    bool sel_pressed = input_cb(0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_SELECT);
+-   bool r_pressed = input_cb(0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_R);
+-   bool l_pressed = input_cb(0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_L);
+    bool a_pressed = input_cb(0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_A);
+-   
+-   /* SEL + R to toggle transparency effects */
+-   if (sel_pressed && r_pressed && !sel_r_pressed) {
+-      Settings.DisableTransparency = !Settings.DisableTransparency;
+-      transparency_indicator_timer = 180; /* 3 seconds at 60fps */
+-      sel_r_pressed = true;
+-   } else if (!sel_pressed || !r_pressed) {
+-      sel_r_pressed = false;
+-   }
+-   
+-   /* SEL + L to toggle audio mute */
+-   if (sel_pressed && l_pressed && !sel_l_pressed) {
+-      hotkey_audio_disabled = !hotkey_audio_disabled;
+-      audio_indicator_timer = 180; /* 3 seconds at 60fps */
+-      sel_l_pressed = true;
+-   } else if (!sel_pressed || !l_pressed) {
+-      sel_l_pressed = false;
+-   }
++
++   /* SEL+R and SEL+L are reserved for UniFrog's hardware backlight shortcut. */
++   sel_r_pressed = false;
++   sel_l_pressed = false;
+    
+    /* SEL + A to cycle frameskip */
+    if (sel_pressed && a_pressed && !sel_a_pressed) {
+-- 
+2.43.0
+
