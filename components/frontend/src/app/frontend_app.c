@@ -618,7 +618,7 @@ static void loop_once(struct frontend_state *fe)
          }
       }
    }
-   if (fe->backlight_save_pending &&
+   if (fe->backlight_save_pending && !select_down &&
        (int32_t)(now - fe->backlight_save_due_ms) >= 0)
       frontend_flush_pending_backlight_save(fe);
    if (now - fe->log_flush_ms >= 30000u) {
@@ -663,18 +663,38 @@ static void loop_once(struct frontend_state *fe)
       unifrog_frontend_lvgl_request_screenshot();
       frontend_set_status(fe, "screenshot log queued");
       combo_handled = 1;
-   } else if (select_down && !unifrog_ui_down(&fe->ui, UNIFROG_UI_R) &&
-       (unifrog_ui_repeated(&fe->ui, UNIFROG_UI_L, now, 380, 140) ||
-        (unifrog_ui_down(&fe->ui, UNIFROG_UI_L) &&
-         unifrog_ui_pressed(&fe->ui, UNIFROG_UI_SELECT)))) {
-      frontend_adjust_backlight(fe, -1, now);
-      combo_handled = 1;
-   } else if (select_down && !unifrog_ui_down(&fe->ui, UNIFROG_UI_L) &&
-       (unifrog_ui_repeated(&fe->ui, UNIFROG_UI_R, now, 380, 140) ||
-        (unifrog_ui_down(&fe->ui, UNIFROG_UI_R) &&
-         unifrog_ui_pressed(&fe->ui, UNIFROG_UI_SELECT)))) {
-      frontend_adjust_backlight(fe, 1, now);
-      combo_handled = 1;
+   }
+
+   {
+      uint32_t backlight_active = 0;
+      int backlight_delta = 0;
+
+      if (!combo_handled && select_down) {
+         int l_down = unifrog_ui_down(&fe->ui, UNIFROG_UI_L);
+         int r_down = unifrog_ui_down(&fe->ui, UNIFROG_UI_R);
+
+         if (l_down && !r_down) {
+            backlight_active = UNIFROG_UI_BUTTON_MASK(UNIFROG_UI_L);
+            backlight_delta = -1;
+         } else if (r_down && !l_down) {
+            backlight_active = UNIFROG_UI_BUTTON_MASK(UNIFROG_UI_R);
+            backlight_delta = 1;
+         }
+      }
+      if (!backlight_active) {
+         fe->backlight_repeat_button = 0;
+         fe->backlight_next_repeat_ms = 0;
+      } else {
+         combo_handled = 1;
+         if (fe->backlight_repeat_button != backlight_active) {
+            fe->backlight_repeat_button = backlight_active;
+            fe->backlight_next_repeat_ms = now + 220u;
+            frontend_adjust_backlight(fe, backlight_delta, now);
+         } else if ((int32_t)(now - fe->backlight_next_repeat_ms) >= 0) {
+            fe->backlight_next_repeat_ms = now + 110u;
+            frontend_adjust_backlight(fe, backlight_delta, now);
+         }
+      }
    }
 
    nav_handled = frontend_input_handle_menu_navigation(fe, now, combo_handled);

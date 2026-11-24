@@ -296,7 +296,7 @@ void frontend_adjust_backlight(struct frontend_state *fe, int delta,
    (void)unifrog_backlight_set(next);
    fe->run_options.backlight_level = (int)next;
    fe->backlight_save_pending = 1;
-   fe->backlight_save_due_ms = now + 400u;
+   fe->backlight_save_due_ms = now + 1500u;
    if (fe->view == FRONTEND_VIEW_LAUNCH_SETTINGS) {
       unsigned selected = fe->selected;
       unsigned scroll = fe->scroll;

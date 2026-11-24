@@ -287,6 +287,8 @@ struct frontend_state {
    uint32_t animation_draw_ms;
    int backlight_save_pending;
    uint32_t backlight_save_due_ms;
+   uint32_t backlight_repeat_button;
+   uint32_t backlight_next_repeat_ms;
    unsigned nav_log_last_selected;
    enum frontend_view nav_log_last_view;
    int applied_style_id;

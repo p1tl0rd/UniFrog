@@ -18,6 +18,12 @@
 3. **`gambatte-prosty` audio sample rate & slowdown fix:**
    - Root cause: on MIPS (`__mips__`), `gambatte-prosty` defaults `gambatte_audio_resampler` to `"cc"` (Cosine), whose `CC_renderaudio()` (`CC_DECIMATION_RATE = 32`) produces ~65,536 Hz audio (`SOUND_SAMPLE_RATE_NATIVE / 32`), while `#if !defined(SF2000)` / `#else` overrides in `libretro.cpp` forced `retro_get_system_av_info()` to report `32000` Hz. UniFrog saw `input_rate == output_rate == 32000`, skipped downsampling, and pushed 2.048x audio samples into the 32 kHz hardware audio sink, throttling emulation speed to ~50%.
    - `cores/patches/gambatte-prosty/0002-Report-actual-audio-sample-rate-on-SF2000-and-avoid-.patch`: removed the fake `32000` sample rate override in `libgambatte/libretro/libretro.cpp` so `SOUND_SAMPLE_RATE_CC` (~65,536 Hz) and `SOUND_SAMPLE_RATE_BLIPPER` (~32,768 Hz) match what the core actually outputs and UniFrog resamples cleanly; also replaced `fake_rtc_get_time()` + `mktime()` in `libgambatte/src/mem/rtc.cpp` (`get_current_time()`) with `fake_rtc_get_base_time()`.
+4. **Fast `Collection` (`Favorites`) & `History` opening:**
+   - `components/frontend/src/app/frontend_browser.c` (`frontend_show_file_list()`): removed the per-entry `stat(game, &st)` SD lookup so opening 59+ favorites does not trigger dozens of synchronous FAT32 long-filename directory scans.
+5. **Responsive `SELECT + L/R` backlight hotkeys in menu & in-game:**
+   - `components/frontend/src/app/frontend_app.c` & `frontend_internal.h` & `frontend_preferences.c`: replaced edge-sensitive `unifrog_ui_repeated()` with a dedicated chord state machine (`backlight_repeat_button`, `backlight_next_repeat_ms`, 220 ms initial / 110 ms repeat) independent of `SELECT` vs `L`/`R` press order, suppressed SD `unifrog.ini` flush while `SELECT` is held, and increased save debounce to `1500 ms`.
+   - `components/libretro/src/unifrog_libretro_host.c`: tightened in-game `SELECT+L/R` repeat timing to 240 ms / 110 ms.
+   - `foundation/src/platform/sf2000/input/unifrog_input.c`: masked raw equality checks in `scan_local_raw_stable()` with `GB300_VALID_RAW_MASK` (`0x7cfb`) so unused-bit jitter (e.g. bit 15 on GB300 `R`) does not trigger spurious mismatches, and cleared `local_menu_guard` when wireless RF polling is not active so quick taps do not linger for an extra poll.
 
 ## Build & Verification
 - Verified inside `unifrog-dev:latest`:

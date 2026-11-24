@@ -592,16 +592,10 @@ void frontend_show_file_list(struct frontend_state *fe, const char *title,
       unifrog_text_copy(game, sizeof(game), line);
       if (game[0]) {
          const char *safe_core = safe_core_for_path(fe, game, core);
-         struct stat st;
-         char meta[64];
 
-         if (stat(game, &st) == 0)
-            snprintf(meta, sizeof(meta), "%s",
-               safe_core[0] ? safe_core : "auto");
-         else
-            snprintf(meta, sizeof(meta), "missing");
-         add_item(fe, frontend_basename(game), meta,
-            FRONTEND_ITEM_GAME, game, safe_core[0] ? safe_core : NULL);
+         add_item(fe, frontend_basename(game),
+            safe_core[0] ? safe_core : "auto", FRONTEND_ITEM_GAME, game,
+            safe_core[0] ? safe_core : NULL);
       }
    }
    fclose(file);

@@ -669,9 +669,9 @@ static void host_handle_backlight_hotkey(uint32_t now_ms)
    }
    if (host.backlight_repeat_button != active) {
       host.backlight_repeat_button = active;
-      host.backlight_next_repeat_ms = now_ms + 380u;
+      host.backlight_next_repeat_ms = now_ms + 240u;
    } else if ((int32_t)(now_ms - host.backlight_next_repeat_ms) >= 0) {
-      host.backlight_next_repeat_ms = now_ms + 140u;
+      host.backlight_next_repeat_ms = now_ms + 110u;
    } else {
       return;
    }

@@ -36,6 +36,7 @@
 #define KEY_SHIFTER_CLOCK_LOW_US 3u
 #define KEY_SHIFTER_CLOCK_HIGH_US 3u
 #define KEY_SHIFTER_RESAMPLE_US 20u
+#define GB300_VALID_RAW_MASK 0x7cfbu
 #define INPUT_DEBOUNCE_STABLE_POLLS 1
 #define INPUT_VALID_BUTTON_MASK ((1u << UNIFROG_BUTTON_COUNT) - 1u)
 
@@ -289,7 +290,8 @@ static uint32_t scan_sf2000_local_raw_once(void)
    return raw_mask;
 }
 
-static uint32_t scan_local_raw_stable(uint32_t (*scan_once)(void))
+static uint32_t scan_local_raw_stable(uint32_t (*scan_once)(void),
+   uint32_t compare_mask)
 {
    uint32_t s0 = scan_once();
    uint32_t s1;
@@ -299,25 +301,27 @@ static uint32_t scan_local_raw_stable(uint32_t (*scan_once)(void))
       return 0;
    unifrog_perf_delay_us(KEY_SHIFTER_RESAMPLE_US);
    s1 = scan_once();
-   if (s0 == s1)
-      return s0;
+   if ((s0 & compare_mask) == (s1 & compare_mask))
+      return s1;
    unifrog_perf_delay_us(KEY_SHIFTER_RESAMPLE_US);
    s2 = scan_once();
-   if (s2 == s1)
-      return s1;
-   if (s2 == s0)
-      return s0;
+   if ((s2 & compare_mask) == (s1 & compare_mask))
+      return s2;
+   if ((s2 & compare_mask) == (s0 & compare_mask))
+      return s2;
    return s0 & s1 & s2;
 }
 
 static uint32_t scan_gb300_local_raw(void)
 {
-   return scan_local_raw_stable(scan_gb300_local_raw_once);
+   return scan_local_raw_stable(scan_gb300_local_raw_once,
+      GB300_VALID_RAW_MASK);
 }
 
 static uint32_t scan_sf2000_local_raw(void)
 {
-   return scan_local_raw_stable(scan_sf2000_local_raw_once);
+   return scan_local_raw_stable(scan_sf2000_local_raw_once,
+      INPUT_VALID_BUTTON_MASK);
 }
 
 static unsigned input_popcount(uint32_t mask)
@@ -668,7 +672,7 @@ void unifrog_input_poll_with_wireless_divisor(unsigned wireless_divisor)
    local_menu_direct = local_norm ? local_norm : local_buttons;
    buttons = (local_buttons | wireless_buttons) & INPUT_VALID_BUTTON_MASK;
    if (local_menu_direct) {
-      local_menu_guard = 1;
+      local_menu_guard = unifrog_input_wireless_available() ? 1u : 0u;
       local_menu_hold_buttons = local_menu_direct;
       menu_buttons = local_menu_direct;
       local_zero_probe_poll_count = 0;
