@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: UniFrog CI <ci@unifrog.local>
 Date: Tue, 24 Nov 2026 14:42:43 +0700
-Subject: [PATCH 3/3] Use integer fixed-point audio mixer, 22050Hz sync, O3,
+Subject: [PATCH 3/4] Use integer fixed-point audio mixer, 22050Hz sync, O3,
  and fast video path on SF2000
 
 ---

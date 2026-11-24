@@ -1,0 +1,284 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: UniFrog CI <ci@unifrog.local>
+Date: Tue, 24 Nov 2026 16:36:52 +0700
+Subject: [PATCH 4/4] Fix Audio.cpp stack bloat, divisions, pattern -1 bounds,
+ and add Graphics fast paths
+
+---
+ libs/z8lua          |   2 +-
+ source/Audio.cpp    |  40 +++++++++++------
+ source/graphics.cpp | 103 ++++++++++++++++++++++++++++++++++++++++++--
+ 3 files changed, 128 insertions(+), 17 deletions(-)
+
+diff --git a/libs/z8lua b/libs/z8lua
+index f0eb8df934c5ad588b12ce40bf1ebf1c2d63edf6..fab155243ebf2afb401c814b8ca90b0e89a3e3f8 160000
+--- a/libs/z8lua
++++ b/libs/z8lua
+@@ -1 +1 @@
+-Subproject commit f0eb8df934c5ad588b12ce40bf1ebf1c2d63edf6
++Subproject commit fab155243ebf2afb401c814b8ca90b0e89a3e3f8
+diff --git a/source/Audio.cpp b/source/Audio.cpp
+index 278c06482b33cf0f716803105205e96d96e530ae..92ff2a772d8fef3f93ee6222e8c5d70c3122386f 100644
+--- a/source/Audio.cpp
++++ b/source/Audio.cpp
+@@ -158,6 +158,10 @@ void Audio::api_music(int pattern, int16_t fade_len, int16_t mask){
+ }
+ 
+ void Audio::set_music_pattern(int pattern) {
++    if (pattern < 0 || pattern > 63) {
++        _audioState._musicChannel.pattern = -1;
++        return;
++    }
+     _audioState._musicChannel.pattern = pattern;
+     _audioState._musicChannel.offset = 0;
+ 
+@@ -246,6 +250,7 @@ static const int32_t s_vol_q15[8] = {
+     0, 4681, 9362, 14043, 18725, 23406, 28087, 32768
+ };
+ static uint32_t s_c2_freq_q16 = 0;
++static uint32_t s_inv_c2_q16 = 0;
+ static uint32_t s_noise_rng = 0x12345678u;
+ static int32_t s_noise_lp = 0;
+ 
+@@ -266,6 +271,7 @@ static void initFixedAudioTables(void) {
+         s_vib_lut[i] = (int16_t)(v >= 0.0 ? v + 0.5 : v - 0.5);
+     }
+     s_c2_freq_q16 = s_phase_inc_q16[24];
++    s_inv_c2_q16 = s_c2_freq_q16 ? (uint32_t)((1ULL << 32) / (uint64_t)s_c2_freq_q16) : 0u;
+     s_fixed_audio_init = true;
+ }
+ 
+@@ -453,6 +459,7 @@ void Audio::mixSfxFixed(rawSfxChannel &ch, uint32_t freq_shift_q16,
+     int speed = sfx.speed < 1 ? 1 : (int)sfx.speed;
+     uint32_t inc_q24 = s_inv_speed_q24[speed];
+     uint32_t fade_dur_q24 = inc_q24 * 25u;
++    uint32_t inv_fade_q32 = fade_dur_q24 ? (uint32_t)((1ULL << 32) / (uint64_t)fade_dur_q24) : 0u;
+     int loop_start = sfx.loopRangeStart;
+     int loop_end = sfx.loopRangeEnd;
+     int loop_len = loop_end - loop_start;
+@@ -496,7 +503,9 @@ void Audio::mixSfxFixed(rawSfxChannel &ch, uint32_t freq_shift_q16,
+         uint32_t offset_part_q24 = off_q24 & 0x00FFFFFFu;
+         int32_t crossfade_q15 = 0;
+         if (offset_part_q24 < fade_dur_q24) {
+-            crossfade_q15 = (int32_t)(((uint64_t)(fade_dur_q24 - offset_part_q24) << 15) / fade_dur_q24);
++            crossfade_q15 = (int32_t)(((uint64_t)(fade_dur_q24 - offset_part_q24) * inv_fade_q32) >> 17);
++            if (crossfade_q15 > 32768)
++                crossfade_q15 = 32768;
+         }
+ 
+         // Primary note synthesis
+@@ -561,7 +570,7 @@ void Audio::mixSfxFixed(rawSfxChannel &ch, uint32_t freq_shift_q16,
+                 c_off_q24 = 0u;
+                 c_phi_q16 = 0u;
+             }
+-            uint32_t c_shift_q16 = (uint32_t)(((uint64_t)freq_q16 << 16) / s_c2_freq_q16);
++            uint32_t c_shift_q16 = (uint32_t)(((uint64_t)freq_q16 * s_inv_c2_q16) >> 16);
+             int32_t cw = evalChildSfxSampleFixed(_memory, *childCh, c_off_q24, c_phi_q16, c_shift_q16);
+             sample_q15 = (vol_q15 * cw) >> 15;
+         } else {
+@@ -618,7 +627,7 @@ void Audio::mixSfxFixed(rawSfxChannel &ch, uint32_t freq_shift_q16,
+                     pc_off_q24 = 0u;
+                     pc_phi_q16 = 0u;
+                 }
+-                uint32_t pc_shift_q16 = (uint32_t)(((uint64_t)pfreq_q16 << 16) / s_c2_freq_q16);
++                uint32_t pc_shift_q16 = (uint32_t)(((uint64_t)pfreq_q16 * s_inv_c2_q16) >> 16);
+                 int32_t pcw = evalChildSfxSampleFixed(_memory, *prevChildCh, pc_off_q24, pc_phi_q16, pc_shift_q16);
+                 psample_q15 = (pvol_q15 * pcw) >> 15;
+             } else {
+@@ -632,7 +641,9 @@ void Audio::mixSfxFixed(rawSfxChannel &ch, uint32_t freq_shift_q16,
+         if (note_idx == len_notes - 1) {
+             uint32_t rem_q24 = (1u << 24) - offset_part_q24;
+             if (rem_q24 < fade_dur_q24) {
+-                int32_t env_q15 = (int32_t)(((uint64_t)(fade_dur_q24 - rem_q24) << 15) / fade_dur_q24);
++                int32_t env_q15 = (int32_t)(((uint64_t)(fade_dur_q24 - rem_q24) * inv_fade_q32) >> 17);
++                if (env_q15 > 32768)
++                    env_q15 = 32768;
+                 sample_q15 = (sample_q15 * env_q15) >> 15;
+             }
+         }
+@@ -660,9 +671,12 @@ void Audio::mixSfxFixed(rawSfxChannel &ch, uint32_t freq_shift_q16,
+                     childCh->offset = (float)c_off_q24 * (1.0f / 16777216.0f);
+                     childCh->current_note.phi = (float)c_phi_q16 * (1.0f / 65536.0f);
+                     ch.rotateChannels();
++                    childCh = ch.getChildChannel();
++                    prevChildCh = ch.getPrevChildChannel();
+                     pc_off_q24 = c_off_q24;
+                     pc_phi_q16 = c_phi_q16;
+-                    childCh->sfxId = -1;
++                    if (childCh)
++                        childCh->sfxId = -1;
+                 }
+             }
+         }
+@@ -693,13 +707,14 @@ void Audio::FillAudioBuffer(void *audioBuffer, size_t offset, size_t size){
+ #ifdef SF2000
+     initFixedAudioTables();
+ 
+-    int32_t mixBuf[1024];
++    static int32_t s_mixBuf[1024];
++    static int32_t s_chanBuf[1024];
+     size_t pos = 0;
+     while (pos < size) {
+         size_t chunk = size - pos;
+         if (chunk > 1024)
+             chunk = 1024;
+-        memset(mixBuf, 0, chunk * sizeof(int32_t));
++        memset(s_mixBuf, 0, chunk * sizeof(int32_t));
+ 
+         size_t done = 0;
+         while (done < chunk) {
+@@ -739,15 +754,14 @@ void Audio::FillAudioBuffer(void *audioBuffer, size_t offset, size_t size){
+                 rawSfxChannel &ch = _audioState._sfxChannels[c];
+                 if (ch.sfxId < 0 || ch.sfxId > 63)
+                     continue;
+-                int32_t chanBuf[1024];
+-                memset(chanBuf, 0, sub * sizeof(int32_t));
+-                mixSfxFixed(ch, 65536u, music_vol_q15, ch.is_music, chanBuf, sub, 0);
++                memset(s_chanBuf, 0, sub * sizeof(int32_t));
++                mixSfxFixed(ch, 65536u, music_vol_q15, ch.is_music, s_chanBuf, sub, 0);
+                 if (_memory->hwState.distort & (1 << c)) {
+                     for (size_t i = 0; i < sub; ++i)
+-                        mixBuf[done + i] += (chanBuf[i] / 0x1000) * 0x1249;
++                        s_mixBuf[done + i] += (s_chanBuf[i] / 0x1000) * 0x1249;
+                 } else {
+                     for (size_t i = 0; i < sub; ++i)
+-                        mixBuf[done + i] += chanBuf[i];
++                        s_mixBuf[done + i] += s_chanBuf[i];
+                 }
+             }
+ 
+@@ -784,7 +798,7 @@ void Audio::FillAudioBuffer(void *audioBuffer, size_t offset, size_t size){
+         }
+ 
+         for (size_t i = 0; i < chunk; ++i) {
+-            int32_t sample = mixBuf[i];
++            int32_t sample = s_mixBuf[i];
+             if (sample > 0x7fff)
+                 sample = 0x7fff;
+             else if (sample < -0x8000)
+diff --git a/source/graphics.cpp b/source/graphics.cpp
+index e12aafbdbe545f92d5ca4333718572f2a2cfa710..4540f4b003b4966bf6fd598db69f6d81da1f5193 100644
+--- a/source/graphics.cpp
++++ b/source/graphics.cpp
+@@ -124,6 +124,65 @@ void Graphics::copySpriteToScreen(
+ 		startWithHalf = true;
+ 	}
+ 
++	if (hwState.colorBitmask == 0xff) {
++		const uint8_t *pal = drawState.drawPaletteMap;
++		for (int y = 0; y < scr_h; y++) {
++			int abs_spr_y = spr_y + (flip_y ? spr_h - (y + 1) : y);
++			if ((unsigned)abs_spr_y >= 128u)
++				continue;
++			const int finaly = scr_y + y;
++			uint8_t *rowDst = screenBuffer + (finaly << 6);
++			const uint8_t *sprRow = spritebuffer + (abs_spr_y << 6);
++			int x = 0;
++			while (x < scr_w) {
++				int abs_spr_x = spr_x + (flip_x ? spr_w - (x + 1) : x);
++				if ((unsigned)abs_spr_x >= 128u) {
++					++x;
++					continue;
++				}
++				uint8_t bothPix = sprRow[abs_spr_x >> 1];
++				uint8_t lc = bothPix & 0x0f;
++				uint8_t rc = bothPix >> 4;
++				int finalx = scr_x + (flip_x ? x + 1 : x);
++
++				if (!flip_x && (x > 0 || !startWithHalf) && (x + 1 < scr_w) && ((finalx & 1) == 0)) {
++					uint8_t pl = pal[lc];
++					uint8_t pr = pal[rc];
++					if (!(pl >> 4) && !(pr >> 4)) {
++						rowDst[finalx >> 1] = (uint8_t)((pl & 0x0f) | ((pr & 0x0f) << 4));
++						x += 2;
++						continue;
++					}
++				}
++
++				if (x > 0 || !startWithHalf) {
++					uint8_t pl = pal[lc];
++					if (!(pl >> 4)) {
++						uint8_t c = pl & 0x0f;
++						uint8_t *dst = &rowDst[finalx >> 1];
++						*dst = (finalx & 1) ? (uint8_t)((*dst & 0x0f) | (c << 4)) : (uint8_t)((*dst & 0xf0) | c);
++					}
++					++x;
++					if (flip_x)
++						--finalx;
++					else
++						++finalx;
++				}
++
++				if (x < scr_w) {
++					uint8_t pr = pal[rc];
++					if (!(pr >> 4)) {
++						uint8_t c = pr & 0x0f;
++						uint8_t *dst = &rowDst[finalx >> 1];
++						*dst = (finalx & 1) ? (uint8_t)((*dst & 0x0f) | (c << 4)) : (uint8_t)((*dst & 0xf0) | c);
++					}
++					++x;
++				}
++			}
++		}
++		return;
++	}
++
+ 	//since we get 2 pixels at a time, don't go through this whole loop every pixel
+ 	for (int y = 0; y < scr_h; y++) {
+ 		int x = 0;
+@@ -1610,11 +1669,49 @@ void Graphics::map(int celx, int cely, int sx, int sy, int celw, int celh) {
+ }
+ 
+ void Graphics::map(int celx, int cely, int sx, int sy, int celw, int celh, uint8_t layer) {
++	auto &drawState = _memory->drawState;
++	auto &hwState = _memory->hwState;
++	const bool bigMap = hwState.mapMemMapping >= 0x80;
++	const int bigMapLocation = hwState.mapMemMapping << 8;
++	const int mapSize = bigMap ? (0x10000 - bigMapLocation) : 8192;
++	const int mapW = hwState.widthOfTheMap == 0 ? 256 : hwState.widthOfTheMap;
++	const int mapH = mapSize / mapW;
++	const int bigMapOffset = 0x8000 - mapSize;
++	uint8_t * const spriteSheet = GetP8SpriteSheetBuffer();
++
++	const int clip_xb = (int)drawState.clip_xb + drawState.camera_x;
++	const int clip_xe = (int)drawState.clip_xe + drawState.camera_x;
++	const int clip_yb = (int)drawState.clip_yb + drawState.camera_y;
++	const int clip_ye = (int)drawState.clip_ye + drawState.camera_y;
++
+ 	for (int y = 0; y < celh; y++) {
++		int cy = cely + y;
++		int py = sy + (y << 3);
++		if (cy < 0 || cy >= mapH)
++			continue;
++		if (py + 8 <= clip_yb || py >= clip_ye)
++			continue;
++		int rowBase = cy * mapW;
+ 		for (int x = 0; x < celw; x++) {
+-			uint8_t cell = mget(celx + x, cely + y);
+-			if (cell && ((layer == 0) || (fget(cell) & layer))) {
+-				spr(cell, sx + x * 8, sy + y * 8);
++			int cx = celx + x;
++			int px = sx + (x << 3);
++			if (cx < 0 || cx >= mapW)
++				continue;
++			if (px + 8 <= clip_xb || px >= clip_xe)
++				continue;
++			int idx = rowBase + cx;
++			uint8_t cell;
++			if (bigMap) {
++				cell = _memory->userData[bigMapOffset + idx];
++			} else if (idx < 4096) {
++				cell = _memory->mapData[idx];
++			} else {
++				cell = _memory->spriteSheetData[idx];
++			}
++			if (cell && ((layer == 0) || (_memory->spriteFlags[cell] & layer))) {
++				int spr_x = (cell & 15) << 3;
++				int spr_y = (cell >> 4) << 3;
++				copySpriteToScreen(spriteSheet, px, py, spr_x, spr_y, 8, 8, false, false);
+ 			}
+ 		}
+ 	}
+-- 
+2.43.0
+

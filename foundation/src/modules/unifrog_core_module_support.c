@@ -32,6 +32,7 @@
 #define MODULE_HEAP_ALIGN 16u
 #define MODULE_HEAP_MAGIC 0x55464850u
 #define MODULE_HEAP_OOM_LOG_LIMIT 4u
+#define MODULE_HEAP_BINS 24u
 
 #define MIPS_CACHE_INDEX_BASE 0x80000000u
 #define MIPS_CACHE_INDEX_END  0x80004000u
@@ -41,9 +42,13 @@ extern char __unifrog_module_end[];
 
 struct module_heap_block {
    size_t size;
-   struct module_heap_block *next;
+   struct module_heap_block *prev_phys;
+   struct module_heap_block *next_phys;
    uint32_t magic;
    uint32_t free;
+   struct module_heap_block *prev_free;
+   struct module_heap_block *next_free;
+   uint32_t bin;
 };
 
 const struct unifrog_abi *unifrog_core_module_abi;
@@ -58,6 +63,8 @@ static struct {
 } module_dir_table[MODULE_DIR_COUNT];
 /* Keep large core-private allocations inside the external module arena. */
 static struct module_heap_block *module_heap_head;
+static struct module_heap_block *module_heap_bins[MODULE_HEAP_BINS];
+static uint32_t module_heap_bin_bitmap;
 static uintptr_t module_heap_base;
 static uintptr_t module_heap_end;
 static int module_heap_checked;
@@ -179,6 +186,68 @@ static size_t module_heap_min_block_size(void)
    return module_heap_header_size() + MODULE_HEAP_ALIGN;
 }
 
+static unsigned module_heap_bin_index(size_t size)
+{
+   unsigned idx;
+
+   if (size <= 16u)
+      return 0u;
+   if (size <= 128u)
+      return (unsigned)((size - 1u) >> 4);
+#if defined(__LP64__) || defined(_LP64)
+   {
+      uint64_t v = (uint64_t)(size - 1u);
+      unsigned bit = (unsigned)(63 - __builtin_clzll(v));
+      idx = bit + 1u;
+   }
+#else
+   {
+      uint32_t v = (uint32_t)(size - 1u);
+      unsigned bit = (unsigned)(31 - __builtin_clz(v));
+      idx = bit + 1u;
+   }
+#endif
+   if (idx >= MODULE_HEAP_BINS)
+      idx = MODULE_HEAP_BINS - 1u;
+   return idx;
+}
+
+static void module_heap_free_insert(struct module_heap_block *block)
+{
+   unsigned bin = module_heap_bin_index(block->size);
+   struct module_heap_block *head = module_heap_bins[bin];
+
+   block->free = 1u;
+   block->bin = bin;
+   block->prev_free = NULL;
+   block->next_free = head;
+   if (head)
+      head->prev_free = block;
+   module_heap_bins[bin] = block;
+   module_heap_bin_bitmap |= (1u << bin);
+}
+
+static void module_heap_free_remove(struct module_heap_block *block)
+{
+   unsigned bin = block->bin;
+   struct module_heap_block *prev = block->prev_free;
+   struct module_heap_block *next = block->next_free;
+
+   if (prev)
+      prev->next_free = next;
+   else if (bin < MODULE_HEAP_BINS)
+      module_heap_bins[bin] = next;
+
+   if (next)
+      next->prev_free = prev;
+
+   if (bin < MODULE_HEAP_BINS && !module_heap_bins[bin])
+      module_heap_bin_bitmap &= ~(1u << bin);
+
+   block->prev_free = NULL;
+   block->next_free = NULL;
+}
+
 static int module_heap_init(void)
 {
    const struct unifrog_abi *abi;
@@ -215,13 +284,16 @@ static int module_heap_init(void)
    if (end - start <= header_size + MODULE_HEAP_ALIGN)
       return 0;
 
+   memset(module_heap_bins, 0, sizeof(module_heap_bins));
+   module_heap_bin_bitmap = 0u;
    module_heap_base = start;
    module_heap_end = end;
    module_heap_head = (struct module_heap_block *)start;
    module_heap_head->size = end - start - header_size;
-   module_heap_head->next = NULL;
+   module_heap_head->prev_phys = NULL;
+   module_heap_head->next_phys = NULL;
    module_heap_head->magic = MODULE_HEAP_MAGIC;
-   module_heap_head->free = 1;
+   module_heap_free_insert(module_heap_head);
    printf("unifrog module_heap init base=0x%08lx end=0x%08lx bytes=%u module_end=0x%08lx\n",
       (unsigned long)module_heap_base, (unsigned long)module_heap_end,
       (unsigned)(module_heap_end - module_heap_base),
@@ -265,25 +337,6 @@ static struct module_heap_block *module_heap_block_from_ptr(void *ptr)
    return block;
 }
 
-static void module_heap_coalesce(void)
-{
-   size_t header_size = module_heap_header_size();
-   struct module_heap_block *block = module_heap_head;
-
-   while (block && block->next) {
-      uintptr_t block_end = (uintptr_t)block + header_size + block->size;
-
-      if (block->free && block->next->free &&
-          block_end == (uintptr_t)block->next &&
-          block->next->magic == MODULE_HEAP_MAGIC) {
-         block->size += header_size + block->next->size;
-         block->next = block->next->next;
-      } else {
-         block = block->next;
-      }
-   }
-}
-
 static void module_heap_log_oom(size_t size, size_t alignment)
 {
    size_t header_size = module_heap_header_size();
@@ -295,7 +348,7 @@ static void module_heap_log_oom(size_t size, size_t alignment)
       return;
    module_heap_oom_logs++;
 
-   for (block = module_heap_head; block; block = block->next) {
+   for (block = module_heap_head; block; block = block->next_phys) {
       if (block->magic == MODULE_HEAP_MAGIC && block->free) {
          total_free += block->size;
          if (block->size > largest_free)
@@ -312,8 +365,8 @@ static void *module_heap_alloc_aligned(size_t size, size_t alignment)
 {
    size_t header_size;
    size_t min_block_size;
-   struct module_heap_block **link;
-   struct module_heap_block *block;
+   unsigned min_bin;
+   uint32_t mask;
 
    if (!size)
       size = 1u;
@@ -328,78 +381,110 @@ static void *module_heap_alloc_aligned(size_t size, size_t alignment)
 
    header_size = module_heap_header_size();
    min_block_size = module_heap_min_block_size();
-   for (link = &module_heap_head; (block = *link) != NULL; link = &block->next) {
-      struct module_heap_block *old_next;
-      uintptr_t block_start;
-      uintptr_t block_end;
-      uintptr_t payload;
-      uintptr_t header;
-      uintptr_t alloc_end;
-      size_t front_bytes;
-      size_t tail_bytes;
+   min_bin = module_heap_bin_index(size);
+   mask = module_heap_bin_bitmap & (~0u << min_bin);
 
-      if (block->magic != MODULE_HEAP_MAGIC || !block->free)
-         continue;
+   while (mask) {
+      unsigned bin = (unsigned)__builtin_ctz(mask);
+      struct module_heap_block *block;
 
-      block_start = (uintptr_t)block;
-      if (block_start > module_heap_end ||
-          module_heap_end - block_start < header_size ||
-          block->size > module_heap_end - block_start - header_size)
-         break;
-      block_end = block_start + header_size + block->size;
-      payload = module_align_up_uintptr(block_start + header_size, alignment);
-      if (!payload || payload < block_start + header_size)
-         continue;
-      header = payload - header_size;
-      front_bytes = header - block_start;
-      if (front_bytes > 0 && front_bytes < min_block_size) {
-         payload = module_align_up_uintptr(block_start + min_block_size +
-            header_size, alignment);
+      mask &= mask - 1u;
+      for (block = module_heap_bins[bin]; block; block = block->next_free) {
+         struct module_heap_block *old_prev;
+         struct module_heap_block *old_next;
+         struct module_heap_block *new_block;
+         uintptr_t block_start;
+         uintptr_t block_end;
+         uintptr_t payload;
+         uintptr_t header;
+         uintptr_t alloc_end;
+         size_t front_bytes;
+         size_t tail_bytes;
+
+         if (block->magic != MODULE_HEAP_MAGIC || !block->free)
+            continue;
+
+         block_start = (uintptr_t)block;
+         if (block_start > module_heap_end ||
+             module_heap_end - block_start < header_size ||
+             block->size > module_heap_end - block_start - header_size)
+            continue;
+         block_end = block_start + header_size + block->size;
+         payload = module_align_up_uintptr(block_start + header_size,
+            alignment);
          if (!payload || payload < block_start + header_size)
             continue;
          header = payload - header_size;
-         if (header < block_start)
-            continue;
          front_bytes = header - block_start;
-         if (front_bytes > 0 && front_bytes < min_block_size)
+         if (front_bytes > 0 && front_bytes < min_block_size) {
+            payload = module_align_up_uintptr(block_start + min_block_size +
+               header_size, alignment);
+            if (!payload || payload < block_start + header_size)
+               continue;
+            header = payload - header_size;
+            if (header < block_start)
+               continue;
+            front_bytes = header - block_start;
+            if (front_bytes > 0 && front_bytes < min_block_size)
+               continue;
+         }
+         if (payload > block_end || size > block_end - payload)
             continue;
+
+         old_prev = block->prev_phys;
+         old_next = block->next_phys;
+         module_heap_free_remove(block);
+
+         new_block = (struct module_heap_block *)header;
+         if (front_bytes >= min_block_size) {
+            struct module_heap_block *front =
+               (struct module_heap_block *)block_start;
+
+            front->size = front_bytes - header_size;
+            front->prev_phys = old_prev;
+            front->next_phys = new_block;
+            front->magic = MODULE_HEAP_MAGIC;
+            if (old_prev)
+               old_prev->next_phys = front;
+            new_block->prev_phys = front;
+            module_heap_free_insert(front);
+         } else {
+            header = block_start;
+            payload = block_start + header_size;
+            new_block = (struct module_heap_block *)header;
+            new_block->prev_phys = old_prev;
+            if (old_prev)
+               old_prev->next_phys = new_block;
+         }
+
+         alloc_end = payload + size;
+         tail_bytes = block_end - alloc_end;
+         if (tail_bytes >= min_block_size) {
+            struct module_heap_block *tail =
+               (struct module_heap_block *)alloc_end;
+
+            tail->size = tail_bytes - header_size;
+            tail->prev_phys = new_block;
+            tail->next_phys = old_next;
+            tail->magic = MODULE_HEAP_MAGIC;
+            if (old_next)
+               old_next->prev_phys = tail;
+            new_block->size = size;
+            new_block->next_phys = tail;
+            module_heap_free_insert(tail);
+         } else {
+            new_block->size = block_end - payload;
+            new_block->next_phys = old_next;
+            if (old_next)
+               old_next->prev_phys = new_block;
+         }
+         new_block->magic = MODULE_HEAP_MAGIC;
+         new_block->free = 0u;
+         new_block->prev_free = NULL;
+         new_block->next_free = NULL;
+         new_block->bin = 0u;
+         return (void *)payload;
       }
-      if (payload > block_end || size > block_end - payload)
-         continue;
-
-      old_next = block->next;
-      if (front_bytes >= min_block_size) {
-         struct module_heap_block *front = block;
-
-         block = (struct module_heap_block *)header;
-         front->size = front_bytes - header_size;
-         front->next = block;
-         front->magic = MODULE_HEAP_MAGIC;
-         front->free = 1;
-      } else {
-         header = block_start;
-         payload = block_start + header_size;
-      }
-
-      alloc_end = payload + size;
-      tail_bytes = block_end - alloc_end;
-      if (tail_bytes >= min_block_size) {
-         struct module_heap_block *tail =
-            (struct module_heap_block *)alloc_end;
-
-         tail->size = tail_bytes - header_size;
-         tail->next = old_next;
-         tail->magic = MODULE_HEAP_MAGIC;
-         tail->free = 1;
-         block->size = size;
-         block->next = tail;
-      } else {
-         block->size = block_end - payload;
-         block->next = old_next;
-      }
-      block->magic = MODULE_HEAP_MAGIC;
-      block->free = 0;
-      return (void *)payload;
    }
 
    module_heap_log_oom(size, alignment);
@@ -408,12 +493,38 @@ static void *module_heap_alloc_aligned(size_t size, size_t alignment)
 
 static void module_heap_free(void *ptr)
 {
+   size_t header_size = module_heap_header_size();
    struct module_heap_block *block = module_heap_block_from_ptr(ptr);
+   struct module_heap_block *next;
+   struct module_heap_block *prev;
 
    if (!block)
       return;
-   block->free = 1;
-   module_heap_coalesce();
+
+   next = block->next_phys;
+   if (next && next->magic == MODULE_HEAP_MAGIC && next->free &&
+       (uintptr_t)block + header_size + block->size == (uintptr_t)next) {
+      module_heap_free_remove(next);
+      block->size += header_size + next->size;
+      block->next_phys = next->next_phys;
+      if (block->next_phys)
+         block->next_phys->prev_phys = block;
+      next->magic = 0u;
+   }
+
+   prev = block->prev_phys;
+   if (prev && prev->magic == MODULE_HEAP_MAGIC && prev->free &&
+       (uintptr_t)prev + header_size + prev->size == (uintptr_t)block) {
+      module_heap_free_remove(prev);
+      prev->size += header_size + block->size;
+      prev->next_phys = block->next_phys;
+      if (prev->next_phys)
+         prev->next_phys->prev_phys = prev;
+      block->magic = 0u;
+      block = prev;
+   }
+
+   module_heap_free_insert(block);
 }
 
 void *malloc(size_t size)
