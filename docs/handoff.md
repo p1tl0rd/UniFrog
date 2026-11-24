@@ -6,6 +6,7 @@
   - `ebbeb11` — Fix `gambatte-prosty` FakeRTC load hang (time-domain underflow / truncated `gambatte_rtc.dat`), external core `fopen()`/`fileno()`/`_fwrite_r`/`_fflush_r` support in `foundation/src/modules/unifrog_core_module_support.c`, and loader teardown/watchdog fixes.
   - `0b3b32f` — Add reproducible Ubuntu 24.04 Dockerfile (`unifrog-dev:latest`).
   - `d329518` — Fix libretro audio upsampler loop in `components/libretro/src/unifrog_libretro_runtime.c` and RACE native 44.1 kHz audio + in-memory ROM loading.
+  - `aa59b17` — Speed up `Collection`/`History` browser opening (`frontend_browser.c`), tighten `SELECT+L/R` backlight chords, and mask GB300 bit-15 jitter.
 
 ## Fixes Completed in This Session
 1. **Sega `.md` ROMs misclassified as Markdown reader (`reader`):**
@@ -24,22 +25,21 @@
    - `components/frontend/src/app/frontend_app.c` & `frontend_internal.h` & `frontend_preferences.c`: replaced edge-sensitive `unifrog_ui_repeated()` with a dedicated chord state machine (`backlight_repeat_button`, `backlight_next_repeat_ms`, 220 ms initial / 110 ms repeat) independent of `SELECT` vs `L`/`R` press order, suppressed SD `unifrog.ini` flush while `SELECT` is held, and increased save debounce to `1500 ms`.
    - `components/libretro/src/unifrog_libretro_host.c`: tightened in-game `SELECT+L/R` repeat timing to 240 ms / 110 ms.
    - `foundation/src/platform/sf2000/input/unifrog_input.c`: masked raw equality checks in `scan_local_raw_stable()` with `GB300_VALID_RAW_MASK` (`0x7cfb`) so unused-bit jitter (e.g. bit 15 on GB300 `R`) does not trigger spurious mismatches, and cleared `local_menu_guard` when wireless RF polling is not active so quick taps do not linger for an extra poll.
+6. **FrogUI ("Alternate Game Browser") 10s Watchdog Crash Fix & PICO-8 Support:**
+   - Root cause: `scan_directory()` in `FrogUI/frogui_libretro.c` called synchronous `stat()` on every file inside `retro_run()`. On HCRTOS FAT32, opening ROM folders with 100–220 files stalled `retro_run()` past 10 s (`10102 ms` observed in `crashlogs_d3295180b532.txt`), tripping `LIBRETRO_WATCHDOG_PHASE_RUN` (`UNIFROG CORE HANG`).
+   - `cores/patches/frogui/0002-Avoid-per-entry-stat-stalls-and-support-PICO-8-carts.patch`: switched `scan_directory()` to `entry->d_type` (`DT_DIR`/`DT_REG`, falling back to `stat()` only when unknown), added `.p8`/`.p8.png` and `{"pico8", "fake08-prosty"}` mappings, and exempted `.p8.png` carts from `.png` filtering.
+7. **SNES Prosty (`snes9x2005-prosty` & `snes9x2002-prosty`) Slowdown, Audio Rate, & Frameskip Fix:**
+   - Root causes: `snes9x2005-prosty/Makefile` (`platform=sf2000`) omitted `-DSF2000_ARITHMETIC_OPTS` globally (only `libretro.c` defined it, leaving `apu.c`/`soundux.c`/`cpuexec.c`/`getset.c`/`gfx.c`/`ppu.c` unoptimized), compiled with `-O2` instead of `-O3`, and set `LOAD_FROM_MEMORY = 0` (16.5 s ROM load stalls). Furthermore, `components/libretro/src/unifrog_libretro_runtime.c` `host_get_variable()` only translated UniFrog `frameskip` for `gpsp*`, leaving `[core.snes9x2005-prosty] frameskip=1` ignored (`snes9x_2005_frameskip=disabled`, zero frames skipped). `snes9x2002-prosty` also hardcoded `AUDIO_SAMPLE_RATE=11025` (forcing host resampling to 32 kHz), and both prosty cores bound `SEL+L`/`SEL+R` hotkeys conflicting with UniFrog brightness.
+   - `cores/patches/snes9x2005-prosty/0002-Enable-SF2000-arithmetic-opts-O3-RAM-ROM-load-and-di.patch`: enabled `-DSF2000_ARITHMETIC_OPTS`, `-O3`, `LOAD_FROM_MEMORY = 1`, and disabled conflicting `SEL+L`/`SEL+R` core hotkeys.
+   - `cores/patches/snes9x2002-prosty/0002-Use-22050-Hz-native-audio-rate-and-disable-conflicti.patch`: raised `AUDIO_SAMPLE_RATE` to `22050` Hz (supported natively without resampling by `host_audio_output_rate()`) and disabled conflicting `SEL+L`/`SEL+R` hotkeys.
+   - `components/libretro/src/unifrog_libretro_runtime.c` (`host_get_variable()`): wired UniFrog's `frameskip` (`OFF` / `AUTO` / `FIXED_1` / `FIXED_2` and fast-forward) to `snes9x_2005_frameskip` / `snes9x_2005_frameskip_threshold` and `snes9x2002_frameskip` / `snes9x2002_frameskip_threshold` / `snes9x2002_frameskip_interval`.
 
 ## Build & Verification
 - Verified inside `unifrog-dev:latest`:
-  - `make dep-patches-check DEP=gambatte-prosty` (OK)
+  - `make dep-patches-check DEP=frogui`, `DEP=snes9x2005-prosty`, `DEP=snes9x2002-prosty` (OK)
   - `make core-manifest-check` (OK)
-  - `make clean && make verify JOBS=12` (exit 0; includes `quick-check`, `host-full-check`, `check`, and `fastboot-check`; generates `bisrv.asd`, `fastboot.asd`, and `output/sdcard/`).
+  - `make clean && make verify JOBS=12` (required after core patch/Makefile changes).
 
-## SD Card Deployment Notes (Observed at `/media/two/C2B3-81CF`)
-- The mounted SD card still had the older `0b3b32fe4325` build and `/unifrog_data/unifrog.ini` containing `extension.md.default=reader` and `gambatte_audio_resampler=cc`. It was **not** modified automatically.
-- To deploy the new build to the SD card, copy from `output/sdcard/` (and root `bisrv.asd` / `fastboot.asd` if updating bootloader/firmware):
-  - `output/sdcard/unifrog/firmware/unifrog.bin` -> `<SD>/unifrog/firmware/unifrog.bin`
-  - `output/sdcard/unifrog/cores/gambatte-prosty.bin` -> `<SD>/unifrog/cores/gambatte-prosty.bin`
-  - `output/sdcard/unifrog/unifrog.ini` -> `<SD>/unifrog/unifrog.ini` (or update `extension.md.handlers=picodrive,reader` and `extension.md.default=picodrive` in `<SD>/unifrog_data/unifrog.ini` as well, since `/unifrog_data/unifrog.ini` overrides defaults).
-
-## Remaining Hardware Checks
-- Test on GB300/SF2000 hardware:
-  1. Launch a `.md` ROM from `/ROMS/sega/` (and confirm Markdown files in other folders can still open with `reader` via `X` -> Open With).
-  2. Navigate menus up/down rapidly on GB300 to confirm no spurious Enter/launch events occur.
-  3. Run a GB/GBC game in `gambatte-prosty` (`gambatte_audio_resampler=cc`) and check `unifrog perf` / audio rate in `/unifrog_data/logs/` to confirm 60 fps full speed and clean ~65536->32000 Hz resampling.
+## SD Card Deployment Notes (`/media/two/C2B3-81CF`)
+- Representative free PICO-8 carts installed to `/ROMS/pico8/` (`rom_system=pico8:fake08-prosty` added to `/unifrog_data/unifrog.ini`, and `snes9x_2005_frameskip=auto` fixed under `[core-options.snes9x2005-prosty]`).
+- Updated `bisrv.asd`, `unifrog.bin`, `manifest.ini`, and rebuilt `{frogui,snes9x2005-prosty,snes9x2002-prosty}.bin` deployed to `/media/two/C2B3-81CF` without touching slow cores or user saves.
