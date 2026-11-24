@@ -50,7 +50,7 @@ CORE_SPECS := \
 	'bluemsx-prosty|$(CORE_SOURCE_ROOT)/libretro-blueMSX-prosty|https://github.com/tzubertowski/libretro-blueMSX.git|head|0b47ea3e7370bab5766eaa7c470d21247da3764a|0b47ea3e7370bab5766eaa7c470d21247da3764a|patches/bluemsx-prosty|.' \
 	'fceumm-prosty|$(CORE_SOURCE_ROOT)/libretro-fceumm-prosty|https://github.com/tzubertowski/libretro-fceumm.git|head|e6111e684e7a7761f3f1d6c80d0a825e2c8cdc7e|e6111e684e7a7761f3f1d6c80d0a825e2c8cdc7e|-|.' \
 	'prboom|$(CORE_SOURCE_ROOT)/libretro-prboom|https://github.com/madcock/libretro-prboom.git|head|288f89dbb5912c5a920b2e3d392a85a8061fc817|288f89dbb5912c5a920b2e3d392a85a8061fc817|patches/prboom|.' \
-	'nxengine|$(CORE_SOURCE_ROOT)/libretro-nxengine|https://github.com/madcock/libretro-nxengine.git|head|34366d14cc8d143df814fc6e6373b4d688ccc9b3|34366d14cc8d143df814fc6e6373b4d688ccc9b3|-|.' \
+	'nxengine|$(CORE_SOURCE_ROOT)/libretro-nxengine|https://github.com/madcock/libretro-nxengine.git|head|34366d14cc8d143df814fc6e6373b4d688ccc9b3|34366d14cc8d143df814fc6e6373b4d688ccc9b3|patches/nxengine|.' \
 	'ecwolf|$(CORE_SOURCE_ROOT)/ecwolf|https://github.com/madcock/ecwolf.git|head|e40256b067fe9de686b9abfba082ed8e0e309f01|e40256b067fe9de686b9abfba082ed8e0e309f01|-|.'
 
 # Patch queues for source repositories pinned as submodules by a core fork.

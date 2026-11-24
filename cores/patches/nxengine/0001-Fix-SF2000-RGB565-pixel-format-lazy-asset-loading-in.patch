@@ -1,0 +1,522 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: UniFrog CI <ci@unifrog.local>
+Date: Tue, 24 Nov 2026 14:46:36 +0700
+Subject: [PATCH] Fix SF2000 RGB565 pixel format, lazy asset loading, in-RAM
+ Doukutsu.exe parse, -O3/no-RTTI
+
+---
+ Makefile                              |  15 ++-
+ nxengine/common/misc.c                |  24 ++--
+ nxengine/extract-auto/cachefiles.c    | 173 +++++++++++++++++++++++++-
+ nxengine/extract-auto/cachefiles.h    |   5 +
+ nxengine/extract-auto/extractorg.c    |   8 +-
+ nxengine/extract-auto/extractpxt.c    |  13 +-
+ nxengine/extract-auto/extractstages.c |   8 +-
+ nxengine/main.cpp                     |  10 +-
+ 8 files changed, 227 insertions(+), 29 deletions(-)
+
+diff --git a/Makefile b/Makefile
+index da8a2892bd119c51ec3f0f9a6018ed2ed9cd68d2..12df6adb933310118c264f5407870f74e5739840 100644
+--- a/Makefile
++++ b/Makefile
+@@ -341,11 +341,13 @@ else ifeq ($(platform), sf2000)
+     CXX = $(MIPS)g++
+     AR = $(MIPS)ar
+     CFLAGS =-EL -march=mips32 -mtune=mips32 -msoft-float -ffast-math -fomit-frame-pointer
+-    CFLAGS+=-G0 -mno-abicalls -fno-pic
++    CFLAGS+=-G0 -mno-abicalls -fno-pic -ffunction-sections -fdata-sections
+ #	-ffreestanding
+     CFLAGS+=-DSF2000
+     CXXFLAGS=$(CFLAGS)
+     STATIC_LINKING = 1
++    FRONTEND_SUPPORTS_RGB565 = 1
++    SINGLE_PRECISION_FLOATS = 1
+ 	
+ #MIYOO
+ else ifeq ($(platform), miyoo)
+@@ -646,6 +648,9 @@ else
+    CFLAGS   += -O0 -g -DDEBUG
+    CXXFLAGS += -O0 -g -DDEBUG
+ endif
++else ifeq ($(platform), sf2000)
++   CFLAGS   += -O3 -DNDEBUG
++   CXXFLAGS += -O3 -DNDEBUG
+ else
+ ifneq (,$(findstring msvc,$(platform)))
+    CFLAGS   += -MT
+@@ -710,6 +715,9 @@ endif
+ COMMON_DEFINES += $(CODE_DEFINES) $(WARNINGS_DEFINES) $(fpic) $(INCFLAGS) $(INCFLAGS_PLATFORM)
+ 
+ CFLAGS     += $(DEFINES) $(COMMON_DEFINES)
++ifeq ($(platform), sf2000)
++CXXFLAGS    = $(CFLAGS) -fno-rtti -fno-exceptions -fno-use-cxa-atexit
++endif
+ 
+ OBJOUT   = -o
+ LINKOUT  = -o 
+@@ -730,8 +738,13 @@ endif
+ %.o: %.c
+ 	$(CC) $(CFLAGS) -c $(OBJOUT)$@ $<
+ 
++ifeq ($(platform), sf2000)
++%.o: %.cpp
++	$(CXX) $(CXXFLAGS) -c $(OBJOUT)$@ $<
++else
+ %.o: %.cpp
+ 	$(CXX) $(CFLAGS) -c $(OBJOUT)$@ $<
++endif
+ 
+ ifeq ($(platform), theos_ios)
+ COMMON_FLAGS := -DIOS -DARM $(COMMON_DEFINES) -I$(THEOS_INCLUDE_PATH) -Wno-error
+diff --git a/nxengine/common/misc.c b/nxengine/common/misc.c
+index 2eff20113883da969028c44659c11a51ba380a56..1c618cae0ed99e65264eed068d2aa1b2f5edf288 100644
+--- a/nxengine/common/misc.c
++++ b/nxengine/common/misc.c
+@@ -60,27 +60,27 @@ void rfputl(uint32_t word, RFILE *fp)
+ double rfgetfloat(RFILE *fp)
+ {
+ 	char buf[8];
+-	double *float_ptr;
++	double val;
+ 	int i;
+ 
+ 	for(i=0;i<4;i++) rfgetc(fp);
+ 	for(i=0;i<8;i++) buf[i] = rfgetc(fp);
+ 
+-	float_ptr = (double *)&buf[0];
+-	return *float_ptr;
++	memcpy(&val, buf, sizeof(val));
++	return val;
+ }
+ 
+ double fgetfloat(FILE *fp)
+ {
+ 	char buf[8];
+-	double *float_ptr;
++	double val;
+ 	int i;
+ 
+ 	for(i=0;i<4;i++) fgetc(fp);
+ 	for(i=0;i<8;i++) buf[i] = fgetc(fp);
+ 
+-	float_ptr = (double *)&buf[0];
+-	return *float_ptr;
++	memcpy(&val, buf, sizeof(val));
++	return val;
+ }
+ #else
+ uint16_t rfgeti(RFILE *fp)
+@@ -125,27 +125,27 @@ void rfputl(uint32_t word, RFILE *fp)
+ double rfgetfloat(RFILE *fp)
+ {
+ 	char buf[8];
+-	double *float_ptr;
++	double val;
+ 	int i;
+ 
+ 	for(i=0;i<4;i++) rfgetc(fp);
+ 	for(i=0;i<8;i++) buf[7 - i] = rfgetc(fp);
+ 
+-	float_ptr = (double *)&buf[0];
+-	return *float_ptr;
++	memcpy(&val, buf, sizeof(val));
++	return val;
+ }
+ 
+ double fgetfloat(FILE *fp)
+ {
+ 	char buf[8];
+-	double *float_ptr;
++	double val;
+ 	int i;
+ 
+ 	for(i=0;i<4;i++) fgetc(fp);
+ 	for(i=0;i<8;i++) buf[7 - i] = fgetc(fp);
+ 
+-	float_ptr = (double *)&buf[0];
+-	return *float_ptr;
++	memcpy(&val, buf, sizeof(val));
++	return val;
+ }
+ #endif
+ 
+diff --git a/nxengine/extract-auto/cachefiles.c b/nxengine/extract-auto/cachefiles.c
+index 7d16cb4baefe91844801cbfaa81d9436fc092286..235f5aa9e6d23901860437364436669c262d6309 100644
+--- a/nxengine/extract-auto/cachefiles.c
++++ b/nxengine/extract-auto/cachefiles.c
+@@ -35,6 +35,7 @@ int64_t rfwrite(void const* buffer,
+ #define SLASH "/"
+ #endif
+ 
++#ifndef SF2000
+ static const char *filenames[] = {
+ "data" SLASH "Arms.pbm",
+ "data" SLASH "ArmsImage.pbm",
+@@ -437,6 +438,7 @@ static const char *filenames[] = {
+ "data" SLASH "TextBox.pbm",
+ "data" SLASH "Title.pbm"
+ };
++#endif
+ 
+ // Windows .bmp resources don't include the BMP-file headers
+ const uint8_t credit_header[] = \
+@@ -485,17 +487,174 @@ bmp_files[] =
+ };
+ 
+ struct hash_struct {
+-   char filename[32];
++   char filename[128];
+    CFILE fd;
+ };
+ 
+ static struct hash_struct **filemap = NULL;
++static uint8_t *s_exe_mem = NULL;
++static size_t s_exe_size = 0;
+ 
+ extern signed short wavetable[100][256];
+ 
++bool exe_mem_load(RFILE *fp)
++{
++   int64_t size;
++   int64_t nread;
++
++   exe_mem_free();
++   if (!fp)
++      return false;
++
++   rfseek(fp, 0, SEEK_END);
++   size = rftell(fp);
++   rfseek(fp, 0, SEEK_SET);
++   if (size <= 0)
++      return false;
++
++   s_exe_mem = (uint8_t *)malloc((size_t)size);
++   if (!s_exe_mem)
++      return false;
++
++   nread = rfread(s_exe_mem, 1, (size_t)size, fp);
++   if (nread != size)
++   {
++      free(s_exe_mem);
++      s_exe_mem = NULL;
++      return false;
++   }
++
++   s_exe_size = (size_t)size;
++   rfseek(fp, 0, SEEK_SET);
++   return true;
++}
++
++void exe_mem_free(void)
++{
++   if (s_exe_mem)
++   {
++      free(s_exe_mem);
++      s_exe_mem = NULL;
++   }
++   s_exe_size = 0;
++}
++
++bool exe_mem_read(uint32_t offset, void *dst, size_t len)
++{
++   if (!s_exe_mem || (size_t)offset > s_exe_size || len > s_exe_size - (size_t)offset)
++      return false;
++   if (len > 0)
++   {
++      if (!dst)
++         return false;
++      memcpy(dst, s_exe_mem + offset, len);
++   }
++   return true;
++}
++
++uint32_t exe_mem_getl(uint32_t *pos)
++{
++   uint32_t p = *pos;
++   if (!s_exe_mem || (size_t)p + 4 > s_exe_size)
++      return 0;
++   *pos = p + 4;
++   return ((uint32_t)s_exe_mem[p + 3] << 24)
++        | ((uint32_t)s_exe_mem[p + 2] << 16)
++        | ((uint32_t)s_exe_mem[p + 1] << 8)
++        | (uint32_t)s_exe_mem[p];
++}
++
++double exe_mem_getfloat(uint32_t *pos)
++{
++   uint32_t p = *pos;
++   double val = 0.0;
++   if (!s_exe_mem || (size_t)p + 12 > s_exe_size)
++      return 0.0;
++   *pos = p + 12;
++#ifdef MSB_FIRST
++   {
++      uint8_t rev[8];
++      int i;
++      for (i = 0; i < 8; i++)
++         rev[i] = s_exe_mem[p + 4 + 7 - i];
++      memcpy(&val, rev, sizeof(val));
++   }
++#else
++   memcpy(&val, s_exe_mem + p + 4, sizeof(val));
++#endif
++   return val;
++}
++
++static struct hash_struct *cachefiles_load_disk_entry(const char *filename, bool fallback_sprites)
++{
++   RFILE *f;
++   char fname[1024];
++   int64_t fsize;
++   struct hash_struct *entry;
++
++   if (!filename || strlen(filename) >= sizeof(entry->filename))
++      return NULL;
++
++   entry = (struct hash_struct *)calloc(sizeof(struct hash_struct), 1);
++   if (!entry)
++      return NULL;
++
++   retro_create_path_string(fname, sizeof(fname), g_dir, filename);
++   f = rfopen(fname, "rb");
++   if (!f)
++   {
++      if (fallback_sprites)
++      {
++         entry->fd.data = sprites_sif;
++         entry->fd.size = sprites_sif_size;
++         strcpy(entry->filename, filename);
++         RHMAP_SET_STR(filemap, entry->filename, entry);
++         return entry;
++      }
++      free(entry);
++      return NULL;
++   }
++
++   rfseek(f, 0, SEEK_END);
++   fsize = rftell(f);
++   rfseek(f, 0, SEEK_SET);
++   if (fsize < 0)
++   {
++      rfclose(f);
++      free(entry);
++      return NULL;
++   }
++
++   entry->fd.size = (size_t)fsize;
++   entry->fd.data = (uint8_t *)malloc(entry->fd.size);
++   if (!entry->fd.data)
++   {
++      rfclose(f);
++      free(entry);
++      return NULL;
++   }
++
++   rfread(entry->fd.data, entry->fd.size, 1, f);
++   rfclose(f);
++
++   strcpy(entry->filename, filename);
++   RHMAP_SET_STR(filemap, entry->filename, entry);
++   return entry;
++}
++
+ bool cachefiles_init(RFILE *exefp)
+ {
+    unsigned i;
++#ifdef SF2000
++   /* On SF2000/FAT32, opening 399 individual asset files at boot stalls launch.
++    * Only sprites.sif (with built-in fallback) is registered upfront; remaining
++    * data/ files are loaded lazily on demand inside copen(). */
++   if (!RHMAP_GET_STR(filemap, "data" SLASH "sprites.sif"))
++   {
++      if (!cachefiles_load_disk_entry("data" SLASH "sprites.sif", true))
++         return false;
++   }
++#else
+    for (i = 0; i < sizeof(filenames) / sizeof(filenames[0]); i++)
+    {
+       RFILE *f;
+@@ -542,6 +701,7 @@ bool cachefiles_init(RFILE *exefp)
+       strcpy(entry->filename, filenames[i]);
+       RHMAP_SET_STR(filemap, entry->filename, entry);
+    }
++#endif
+ 
+    
+    for (i = 0; i < sizeof(bmp_files) / sizeof(bmp_files[0]); i++)
+@@ -551,6 +711,8 @@ bool cachefiles_init(RFILE *exefp)
+       struct hash_struct *entry = RHMAP_GET_STR(filemap, bmp_files[i].filename);
+       if (entry)
+          continue;
++      if (strlen(bmp_files[i].filename) >= sizeof(entry->filename))
++         continue;
+       entry = (struct hash_struct *) calloc(sizeof(struct hash_struct), 1);
+       if (!entry)
+          continue;
+@@ -563,8 +725,11 @@ bool cachefiles_init(RFILE *exefp)
+       if (bmp_files[i].header)
+          memcpy(entry->fd.data, bmp_files[i].header, 25);
+ 
+-      rfseek(exefp, bmp_files[i].offset, SEEK_SET);
+-      rfread(entry->fd.data + hoff, bmp_files[i].length, 1, exefp);
++      if (!exe_mem_read(bmp_files[i].offset, entry->fd.data + hoff, bmp_files[i].length))
++      {
++         rfseek(exefp, bmp_files[i].offset, SEEK_SET);
++         rfread(entry->fd.data + hoff, bmp_files[i].length, 1, exefp);
++      }
+ 
+       // wavetable.dat
+       if (strcmp(bmp_files[i].filename, "wavetable.dat") == 0)
+@@ -623,6 +788,8 @@ CFILE *copen(const char *fname, const char *mode)
+       return NULL;
+ 
+    entry = RHMAP_GET_STR(filemap, fname);
++   if (!entry)
++      entry = cachefiles_load_disk_entry(fname, false);
+    if (!entry)
+    {
+       free(f);
+diff --git a/nxengine/extract-auto/cachefiles.h b/nxengine/extract-auto/cachefiles.h
+index 32921613729c3ca5fde25a9d48e041643070956c..f6fa456fd9cc483669ca878bea59b473f7f2e6fa 100644
+--- a/nxengine/extract-auto/cachefiles.h
++++ b/nxengine/extract-auto/cachefiles.h
+@@ -13,6 +13,11 @@ extern "C" {
+ 
+ typedef struct file_data CFILE;
+ 
++bool exe_mem_load(RFILE *fp);
++void exe_mem_free(void);
++bool exe_mem_read(uint32_t offset, void *dst, size_t len);
++uint32_t exe_mem_getl(uint32_t *pos);
++double exe_mem_getfloat(uint32_t *pos);
+ bool cachefiles_init(RFILE *exefp);
+ void cachefiles_close(void);
+ CFILE *copen(const char *fname, const char *mode);
+diff --git a/nxengine/extract-auto/extractorg.c b/nxengine/extract-auto/extractorg.c
+index 779a4ba4af1bcb08f2fb374e9cac441d8ace935a..e066ea73983969af06680a20c4fb27521d2da622 100644
+--- a/nxengine/extract-auto/extractorg.c
++++ b/nxengine/extract-auto/extractorg.c
+@@ -5,6 +5,7 @@
+ #include <sys/stat.h>
+ #include "../common/basics.h"
+ #include "../libretro/libretro_shared.h"
++#include "cachefiles.h"
+ 
+ #ifdef __MINGW32__
+ 	#include <direct.h>
+@@ -112,8 +113,11 @@ bool extract_org(RFILE *exefp)
+       file = buffer;
+ 
+       // read data from exe
+-      rfseek(exefp, files[i].offset, SEEK_SET);
+-      rfread(file, files[i].length, 1, exefp);
++      if (!exe_mem_read(files[i].offset, file, files[i].length))
++      {
++         rfseek(exefp, files[i].offset, SEEK_SET);
++         rfread(file, files[i].length, 1, exefp);
++      }
+ 
+       // write out the file
+       
+diff --git a/nxengine/extract-auto/extractpxt.c b/nxengine/extract-auto/extractpxt.c
+index 6885286928e4741cd15aa822c6887100945968cd..b89a53d2b651df97abc58a35adaeecc10287122b 100644
+--- a/nxengine/extract-auto/extractpxt.c
++++ b/nxengine/extract-auto/extractpxt.c
+@@ -5,6 +5,7 @@
+ #include <sys/stat.h>
+ #include "../common/basics.h"
+ #include "../libretro/libretro_shared.h"
++#include "cachefiles.h"
+ #include "../sound/pxt.h"
+ 
+ #include "extractpxt.fdh"
+@@ -187,7 +188,11 @@ bool extract_pxt(RFILE *fp, int s, stPXSound *outsnd)
+ 	if (!found)
+ 		return 1;
+ 
+-	rfseek(fp, snd[s].offset, SEEK_SET);
++	uint32_t pos = snd[s].offset;
++	bool use_mem = exe_mem_read(pos, NULL, 0);
++
++	if (!use_mem)
++		rfseek(fp, snd[s].offset, SEEK_SET);
+ 	memset(chan, 0, sizeof(chan));
+ 
+ 	// load data
+@@ -196,13 +201,13 @@ bool extract_pxt(RFILE *fp, int s, stPXSound *outsnd)
+ 		for(i=0;fields[i].name;i++)
+ 		{
+ 			if (fields[i].is_integer)
+-				chan[c].values[i].intvalue = rfgetl(fp);
++				chan[c].values[i].intvalue = use_mem ? (int)exe_mem_getl(&pos) : (int)rfgetl(fp);
+ 			else
+-				chan[c].values[i].fpvalue = rfgetfloat(fp);
++				chan[c].values[i].fpvalue = use_mem ? exe_mem_getfloat(&pos) : rfgetfloat(fp);
+ 		}
+ 
+ 		// skip padding between sections
+-		if (rfgetl(fp) != 0)
++		if ((use_mem ? exe_mem_getl(&pos) : rfgetl(fp)) != 0)
+ 			return 1;
+ 	}
+ 
+diff --git a/nxengine/extract-auto/extractstages.c b/nxengine/extract-auto/extractstages.c
+index 7ad8dc987707379cad4fbc9fe43275fd34ce1bd1..3deddc8d1c29584b58a7e9cee2423410029bce39 100644
+--- a/nxengine/extract-auto/extractstages.c
++++ b/nxengine/extract-auto/extractstages.c
+@@ -7,6 +7,7 @@
+ #include <sys/stat.h>
+ #include "../common/basics.h"
+ #include "../libretro/libretro_shared.h"
++#include "cachefiles.h"
+ #include "../stagedata.h"
+ #include "../maprecord.h"
+ #include "extractstages.fdh"
+@@ -78,8 +79,11 @@ bool extract_stages(RFILE *exefp)
+ 	const char *error = NULL;
+ 
+ 	// load raw data into struct
+-	rfseek(exefp, DATA_OFFSET, SEEK_SET);
+-	rfread(exemapdata, sizeof(struct EXEMapRecord), _NMAPS, exefp);
++	if (!exe_mem_read(DATA_OFFSET, exemapdata, sizeof(struct EXEMapRecord) * _NMAPS))
++	{
++		rfseek(exefp, DATA_OFFSET, SEEK_SET);
++		rfread(exemapdata, sizeof(struct EXEMapRecord), _NMAPS, exefp);
++	}
+ 
+ 	// convert the data
+ 	memset(stages, 0, sizeof(stages));
+diff --git a/nxengine/main.cpp b/nxengine/main.cpp
+index 99e5d5116cfc83dc6519914a6741c69adcec5b0e..39c53019f3396efbea01bef9e78824a8714f21f1 100644
+--- a/nxengine/main.cpp
++++ b/nxengine/main.cpp
+@@ -76,19 +76,19 @@ bool pre_main(void)
+ 
+    retro_create_path_string(filename, sizeof(filename), g_dir, "Doukutsu.exe");
+    fp = rfopen(filename, "rb");
+-
+-   if (!cachefiles_init(fp))
++   if (!fp)
+       return 1;
+ 
+-   if (sound_init(fp))
+-      return 1;
++   exe_mem_load(fp);
+ 
+-   if (extract_stages(fp))
++   if (!cachefiles_init(fp) || sound_init(fp) || extract_stages(fp))
+    {
++      exe_mem_free();
+       rfclose(fp);
+       return 1;
+    }
+ 
++   exe_mem_free();
+    rfclose(fp);
+ 
+    settings->files_extracted = true;
+
+base-commit: 34366d14cc8d143df814fc6e6373b4d688ccc9b3
+-- 
+2.43.0
+

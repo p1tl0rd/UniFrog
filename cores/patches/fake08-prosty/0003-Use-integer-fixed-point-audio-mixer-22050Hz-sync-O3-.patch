@@ -1,0 +1,800 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: UniFrog CI <ci@unifrog.local>
+Date: Tue, 24 Nov 2026 14:42:43 +0700
+Subject: [PATCH 3/3] Use integer fixed-point audio mixer, 22050Hz sync, O3,
+ and fast video path on SF2000
+
+---
+ platform/libretro/Makefile     |   3 +
+ platform/libretro/libretro.cpp |  46 ++-
+ source/Audio.cpp               | 588 +++++++++++++++++++++++++++++++--
+ source/Audio.h                 |   3 +
+ 4 files changed, 600 insertions(+), 40 deletions(-)
+
+diff --git a/platform/libretro/Makefile b/platform/libretro/Makefile
+index 88f2eb2216ee2ec6d56e62b1263d2cc860472a22..e2112a5b9265220a858df0deb91da72265801232 100644
+--- a/platform/libretro/Makefile
++++ b/platform/libretro/Makefile
+@@ -170,6 +170,9 @@ LDFLAGS += $(LIBM)
+ ifeq ($(DEBUG), 1)
+    CFLAGS += -O0 -g -DDEBUG
+    CXXFLAGS += -O0 -g -DDEBUG
++else ifeq ($(platform), sf2000)
++   CFLAGS += -O3
++   CXXFLAGS += -O3
+ else
+    CFLAGS += -O2
+    CXXFLAGS += -O2
+diff --git a/platform/libretro/libretro.cpp b/platform/libretro/libretro.cpp
+index 02afbdf44337b6574c20e6486ed288b66cb9e03f..d566f5a3a5bba0ac0ed88d29cd3d98f11fe4daeb 100644
+--- a/platform/libretro/libretro.cpp
++++ b/platform/libretro/libretro.cpp
+@@ -741,9 +741,14 @@ EXPORT void retro_run()
+         bool should_play_audio = true;
+         if (should_play_audio) {
+ #ifdef SF2000
+-            // SF2000 - process audio every frame but with decimated samples
+-            _audio->FillAudioBuffer(&audioBuffer, 0, SAMPLESPERFRAME);
+-            audio_batch_cb(audioBuffer, SAMPLESPERFRAME);
++            if (_vm->getTargetFps() == 60) {
++                size_t batch_samples = (frame & 1) ? 368 : 367;
++                _audio->FillAudioBuffer(&audioBuffer, 0, batch_samples);
++                audio_batch_cb(audioBuffer, batch_samples);
++            } else if ((frame & 1) == 0) {
++                _audio->FillAudioBuffer(&audioBuffer, 0, SAMPLESPERFRAME);
++                audio_batch_cb(audioBuffer, SAMPLESPERFRAME);
++            }
+ #else
+             // Regular stereo optimization - every other frame
+             if (frame % 2 == 0) {
+@@ -819,6 +824,14 @@ EXPORT void retro_run()
+     height -= (crop_v_top + crop_v_bottom);
+     pitch  -= (crop_h_left + crop_h_right) * sizeof(uint16_t);
+ 
++#ifdef SF2000
++    if (_vm->getTargetFps() != 60 && (frame & 1) != 0) {
++        video_cb(NULL, width * scale, height * scale, pitch * scale);
++        frame++;
++        return;
++    }
++#endif
++
+     // Optimized video conversion - eliminate per-pixel function calls
+     if (scale > 1) {
+         for(unsigned scry = 0; scry < height; scry++) {
+@@ -867,6 +880,24 @@ EXPORT void retro_run()
+         video_cb(&screenBuffer2x, width * scale, height * scale, pitch * scale);
+     }
+     else {
++#ifdef SF2000
++        if (drawModeScaleX == 1 && drawModeScaleY == 1 &&
++            crop_h_left == 0 && crop_h_right == 0 &&
++            crop_v_top == 0 && crop_v_bottom == 0) {
++            uint16_t pal16[16];
++            for (int i = 0; i < 16; i++) {
++                uint8_t idx = screenPaletteMap[i];
++                pal16[i] = _rgb565Colors[idx < 144 ? idx : (idx & 0x0f)];
++            }
++            uint16_t *dst = screenBuffer;
++            for (int i = 0; i < (PicoScreenWidth * PicoScreenHeight) / 2; i++) {
++                uint8_t bothPix = picoFb[i];
++                dst[0] = pal16[bothPix & 0x0f];
++                dst[1] = pal16[bothPix >> 4];
++                dst += 2;
++            }
++        } else {
++#endif
+         for(unsigned scry = 0; scry < height; scry++) {
+             for (unsigned scrx = 0; scrx < width; scrx++) {
+                 int picox = (scrx + crop_h_left) / drawModeScaleX;
+@@ -879,6 +910,9 @@ EXPORT void retro_run()
+                 screenBuffer[scry*width+scrx] = _rgb565Colors[screenPaletteMap[pixel]];
+             }
+         }
++#ifdef SF2000
++        }
++#endif
+ 
+         // Check for splash screen override (1x buffer)
+         if (splash_screen_active && splash_frame_counter < 90) {
+@@ -1149,13 +1183,17 @@ EXPORT bool retro_load_game(struct retro_game_info const *info)
+ {
+     check_variables(true);
+ 
+-    // Initialize splash screen
++    // Disable blocking splash screen on SF2000
+     splash_frame_counter = 0;
++#ifdef SF2000
++    splash_screen_active = false;
++#else
+     splash_screen_active = true;
+     initSplashFont();
+     if (log_cb) {
+         log_cb(RETRO_LOG_INFO, "SPLASH: Splash screen activated for first 90 frames (3 seconds)\n");
+     }
++#endif
+ 
+     if (!info) {
+         _vm->QueueCartChange("__FAKE08-BIOS.p8");
+diff --git a/source/Audio.cpp b/source/Audio.cpp
+index fb52617e50268911797c4e7e16d3a323f5395178..278c06482b33cf0f716803105205e96d96e530ae 100644
+--- a/source/Audio.cpp
++++ b/source/Audio.cpp
+@@ -237,32 +237,576 @@ void Audio::set_music_pattern(int pattern) {
+     }
+ }
+ 
++#ifdef SF2000
++static bool s_fixed_audio_init = false;
++static uint32_t s_phase_inc_q16[64];
++static uint32_t s_inv_speed_q24[256];
++static int16_t s_vib_lut[256];
++static const int32_t s_vol_q15[8] = {
++    0, 4681, 9362, 14043, 18725, 23406, 28087, 32768
++};
++static uint32_t s_c2_freq_q16 = 0;
++static uint32_t s_noise_rng = 0x12345678u;
++static int32_t s_noise_lp = 0;
++
++static void initFixedAudioTables(void) {
++    if (s_fixed_audio_init)
++        return;
++    for (int k = 0; k < 64; k++) {
++        double freq = 440.0 * std::exp2((double)(k - 33) / 12.0);
++        double inc = (freq / 22050.0) * 65536.0;
++        s_phase_inc_q16[k] = (uint32_t)(inc + 0.5);
++    }
++    s_inv_speed_q24[0] = 0;
++    for (int spd = 1; spd < 256; spd++) {
++        s_inv_speed_q24[spd] = (uint32_t)((1ULL << 24) / (183ULL * (uint64_t)spd));
++    }
++    for (int i = 0; i < 256; i++) {
++        double v = std::sin((double)i * (2.0 * 3.14159265358979323846 / 256.0)) * 16384.0;
++        s_vib_lut[i] = (int16_t)(v >= 0.0 ? v + 0.5 : v - 0.5);
++    }
++    s_c2_freq_q16 = s_phase_inc_q16[24];
++    s_fixed_audio_init = true;
++}
++
++static inline uint32_t floatOffsetToQ24(float offset) {
++    if (offset <= 0.0f)
++        return 0u;
++    if (offset >= 255.0f)
++        return 255u << 24;
++    return (uint32_t)(offset * 16777216.0f);
++}
++
++static inline uint32_t floatPhiToQ16(float phi) {
++    if (phi <= 0.0f)
++        return 0u;
++    int32_t whole = (int32_t)phi;
++    float frac = phi - (float)whole;
++    uint32_t wmod = (uint32_t)(whole & 127);
++    int32_t fbits = (int32_t)(frac * 65536.0f);
++    return ((wmod << 16) + (uint32_t)fbits) & 0x007FFFFFu;
++}
++
++static inline int32_t evalWaveformFixed(int instrument, uint32_t phi_q16) {
++    uint32_t t_q16 = phi_q16 & 0xFFFFu;
++    switch (instrument) {
++        case z8::synth::INST_TRIANGLE: {
++            int32_t u = (int32_t)(t_q16 << 2) - 131072;
++            if (u < 0)
++                u = -u;
++            return (u - 65536) >> 2;
++        }
++        case z8::synth::INST_TILTED_SAW:
++            if (t_q16 < 58982u)
++                return (((int32_t)t_q16 * 36409) >> 16) - 16384;
++            return (((int32_t)(65536u - t_q16) * 327680) >> 16) - 16384;
++        case z8::synth::INST_SAW: {
++            int32_t st = (t_q16 < 32768u) ? (int32_t)t_q16 : (int32_t)t_q16 - 65536;
++            return (st * 21398) >> 16;
++        }
++        case z8::synth::INST_SQUARE:
++            return (t_q16 < 32768u) ? 8192 : -8192;
++        case z8::synth::INST_PULSE:
++            return (t_q16 < 21845u) ? 8192 : -8192;
++        case z8::synth::INST_ORGAN:
++            if (t_q16 < 32768u) {
++                int32_t v = 24 * (int32_t)t_q16 - (6 << 16);
++                if (v < 0)
++                    v = -v;
++                return (((3 << 16) - v) * 3641) >> 16;
++            } else {
++                int32_t v = 16 * (int32_t)t_q16 - (12 << 16);
++                if (v < 0)
++                    v = -v;
++                return (((1 << 16) - v) * 3641) >> 16;
++            }
++        case z8::synth::INST_NOISE: {
++            s_noise_rng ^= s_noise_rng << 13;
++            s_noise_rng ^= s_noise_rng >> 17;
++            s_noise_rng ^= s_noise_rng << 5;
++            int32_t r = (int32_t)(s_noise_rng >> 17) - 16384;
++            s_noise_lp = (s_noise_lp * 3 + r) >> 2;
++            return (s_noise_lp * 13107) >> 15;
++        }
++        case z8::synth::INST_PHASER: {
++            uint32_t adv_mod128 = (phi_q16 >> 7) & 0xFFFFu;
++            int32_t k = (int32_t)(adv_mod128 << 1) - 65536;
++            if (k < 0)
++                k = -k;
++            uint32_t u = (t_q16 + (uint32_t)(k >> 1)) & 0xFFFFu;
++            int32_t a = (int32_t)(u << 2) - 131072;
++            if (a < 0)
++                a = -a;
++            int32_t b = (int32_t)(t_q16 << 3) - 262144;
++            if (b < 0)
++                b = -b;
++            return ((a - b) * 5461) >> 16;
++        }
++        default:
++            return 0;
++    }
++}
++
++static inline int32_t evalChildSfxSampleFixed(PicoRam *memory, rawSfxChannel &ch,
++                                              uint32_t &off_q24, uint32_t &phi_q16,
++                                              uint32_t freq_shift_q16) {
++    if (ch.sfxId < 0 || ch.sfxId > 63)
++        return 0;
++    const struct sfx &sfx = memory->sfx[ch.sfxId];
++    int speed = sfx.speed < 1 ? 1 : (int)sfx.speed;
++    uint32_t inc_q24 = s_inv_speed_q24[speed];
++    uint32_t next_off_q24 = off_q24 + inc_q24;
++
++    int loop_start = sfx.loopRangeStart;
++    int loop_end = sfx.loopRangeEnd;
++    int loop_len = loop_end - loop_start;
++    if (loop_len > 0 && ch.can_loop) {
++        uint32_t loop_start_q24 = (uint32_t)loop_start << 24;
++        uint32_t loop_end_q24 = (uint32_t)loop_end << 24;
++        uint32_t loop_len_q24 = (uint32_t)loop_len << 24;
++        if (next_off_q24 >= loop_end_q24) {
++            next_off_q24 -= loop_len_q24;
++            if (next_off_q24 >= loop_end_q24)
++                next_off_q24 = loop_start_q24 + (next_off_q24 - loop_start_q24) % loop_len_q24;
++        }
++    }
++
++    int note_idx = (int)(off_q24 >> 24);
++    if (note_idx >= 32) {
++        ch.sfxId = -1;
++        return 0;
++    }
++    note cur_n = sfx.notes[note_idx];
++    ch.current_note.n = cur_n;
++    int next_note_idx = (int)(next_off_q24 >> 24);
++
++    uint8_t key = cur_n.getKey();
++    uint32_t freq_q16 = (key < 64) ? s_phase_inc_q16[key] : 0u;
++    int32_t vol_q15 = s_vol_q15[cur_n.getVolume() & 7];
++    uint32_t offset_part_q24 = off_q24 & 0x00FFFFFFu;
++    int32_t tmod_q15 = (int32_t)(offset_part_q24 >> 9);
++    int fx = cur_n.getEffect();
++
++    switch (fx) {
++        case FX_SLIDE: {
++            uint8_t pk = ch.prev_note.n.getKey();
++            uint32_t pf = (pk < 64) ? s_phase_inc_q16[pk] : 0u;
++            freq_q16 = (uint32_t)((int32_t)pf + (((int64_t)((int32_t)freq_q16 - (int32_t)pf) * tmod_q15) >> 15));
++            if (ch.prev_note.n.getVolume() > 0) {
++                int32_t pv = s_vol_q15[ch.prev_note.n.getVolume() & 7];
++                vol_q15 = pv + (((vol_q15 - pv) * tmod_q15) >> 15);
++            }
++            break;
++        }
++        case FX_VIBRATO: {
++            uint32_t vib_idx = (((uint32_t)tmod_q15 * (uint32_t)speed * 127u) >> 18) & 0xFFu;
++            int32_t vt = s_vib_lut[vib_idx];
++            freq_q16 = (uint32_t)((int64_t)freq_q16 + (((int64_t)freq_q16 * 3898 * vt) >> 30));
++            break;
++        }
++        case FX_DROP:
++            freq_q16 = (uint32_t)(((uint64_t)freq_q16 * (65536u - (offset_part_q24 >> 8))) >> 16);
++            break;
++        case FX_FADE_IN:
++            vol_q15 = (vol_q15 * tmod_q15) >> 15;
++            break;
++        case FX_FADE_OUT:
++            vol_q15 = (vol_q15 * (32768 - tmod_q15)) >> 15;
++            break;
++        case FX_ARP_FAST:
++        case FX_ARP_SLOW: {
++            uint32_t m = (speed <= 8 ? 32u : 16u) / (fx == FX_ARP_FAST ? 4u : 8u);
++            uint32_t n = (uint32_t)(((uint64_t)(off_q24 >> 12) * m * (uint32_t)speed * 255u) >> 24);
++            int arp_note = (note_idx & ~3) | ((int)n & 3);
++            uint8_t ak = sfx.notes[arp_note].getKey();
++            freq_q16 = (ak < 64) ? s_phase_inc_q16[ak] : 0u;
++            break;
++        }
++        default:
++            break;
++    }
++
++    freq_q16 = (uint32_t)(((uint64_t)freq_q16 * freq_shift_q16) >> 16);
++    int32_t wave = evalWaveformFixed(cur_n.getWaveform(), phi_q16);
++    phi_q16 = (phi_q16 + freq_q16) & 0x007FFFFFu;
++
++    off_q24 = next_off_q24;
++    if (next_off_q24 >= (32u << 24)) {
++        ch.sfxId = -1;
++    } else if (next_note_idx != note_idx) {
++        ch.prev_note.n = cur_n;
++        ch.prev_note.phi = (float)phi_q16 * (1.0f / 65536.0f);
++        ch.current_note.n = sfx.notes[next_note_idx];
++    }
++
++    return (vol_q15 * wave) >> 15;
++}
++
++void Audio::mixSfxFixed(rawSfxChannel &ch, uint32_t freq_shift_q16,
++                        int32_t music_vol_q15, bool apply_music_vol,
++                        int32_t *out, size_t count, int depth) {
++    (void)depth;
++    if (ch.sfxId < 0 || ch.sfxId > 63 || count == 0)
++        return;
++
++    const struct sfx &sfx = _memory->sfx[ch.sfxId];
++    int speed = sfx.speed < 1 ? 1 : (int)sfx.speed;
++    uint32_t inc_q24 = s_inv_speed_q24[speed];
++    uint32_t fade_dur_q24 = inc_q24 * 25u;
++    int loop_start = sfx.loopRangeStart;
++    int loop_end = sfx.loopRangeEnd;
++    int loop_len = loop_end - loop_start;
++    bool has_loop = (loop_len > 0) && ch.can_loop;
++    uint32_t loop_start_q24 = (uint32_t)loop_start << 24;
++    uint32_t loop_end_q24 = (uint32_t)loop_end << 24;
++    uint32_t loop_len_q24 = (uint32_t)loop_len << 24;
++    int len_notes = loop_end == 0 ? 32 : loop_end;
++    uint32_t off_q24 = floatOffsetToQ24(ch.offset);
++    uint32_t phi_q16 = floatPhiToQ16(ch.current_note.phi);
++    uint32_t prev_phi_q16 = floatPhiToQ16(ch.prev_note.phi);
++    rawSfxChannel *childCh = ch.getChildChannel();
++    rawSfxChannel *prevChildCh = ch.getPrevChildChannel();
++    uint32_t c_off_q24 = childCh ? floatOffsetToQ24(childCh->offset) : 0u;
++    uint32_t c_phi_q16 = childCh ? floatPhiToQ16(childCh->current_note.phi) : 0u;
++    uint32_t pc_off_q24 = prevChildCh ? floatOffsetToQ24(prevChildCh->offset) : 0u;
++    uint32_t pc_phi_q16 = prevChildCh ? floatPhiToQ16(prevChildCh->current_note.phi) : 0u;
++
++    for (size_t i = 0; i < count; ++i) {
++        if (ch.sfxId < 0)
++            break;
++
++        uint32_t next_off_q24 = off_q24 + inc_q24;
++        if (has_loop && next_off_q24 >= loop_end_q24) {
++            next_off_q24 -= loop_len_q24;
++            if (next_off_q24 >= loop_end_q24)
++                next_off_q24 = loop_start_q24 + (next_off_q24 - loop_start_q24) % loop_len_q24;
++        }
++
++        int note_idx = (int)(off_q24 >> 24);
++        if (note_idx >= 32) {
++            ch.sfxId = -1;
++            if (childCh)
++                childCh->sfxId = -1;
++            break;
++        }
++        note cur_n = sfx.notes[note_idx];
++        ch.current_note.n = cur_n;
++        int next_note_idx = (int)(next_off_q24 >> 24);
++
++        uint32_t offset_part_q24 = off_q24 & 0x00FFFFFFu;
++        int32_t crossfade_q15 = 0;
++        if (offset_part_q24 < fade_dur_q24) {
++            crossfade_q15 = (int32_t)(((uint64_t)(fade_dur_q24 - offset_part_q24) << 15) / fade_dur_q24);
++        }
++
++        // Primary note synthesis
++        uint8_t key = cur_n.getKey();
++        uint32_t freq_q16 = (key < 64) ? s_phase_inc_q16[key] : 0u;
++        int32_t vol_q15 = s_vol_q15[cur_n.getVolume() & 7];
++        int32_t tmod_q15 = (int32_t)(offset_part_q24 >> 9);
++        int fx = cur_n.getEffect();
++
++        switch (fx) {
++            case FX_SLIDE: {
++                uint8_t pk = ch.prev_note.n.getKey();
++                uint32_t pf = (pk < 64) ? s_phase_inc_q16[pk] : 0u;
++                freq_q16 = (uint32_t)((int32_t)pf + (((int64_t)((int32_t)freq_q16 - (int32_t)pf) * tmod_q15) >> 15));
++                if (ch.prev_note.n.getVolume() > 0) {
++                    int32_t pv = s_vol_q15[ch.prev_note.n.getVolume() & 7];
++                    vol_q15 = pv + (((vol_q15 - pv) * tmod_q15) >> 15);
++                }
++                break;
++            }
++            case FX_VIBRATO: {
++                uint32_t vib_idx = (((uint32_t)tmod_q15 * (uint32_t)speed * 127u) >> 18) & 0xFFu;
++                int32_t vt = s_vib_lut[vib_idx];
++                freq_q16 = (uint32_t)((int64_t)freq_q16 + (((int64_t)freq_q16 * 3898 * vt) >> 30));
++                break;
++            }
++            case FX_DROP:
++                freq_q16 = (uint32_t)(((uint64_t)freq_q16 * (65536u - (offset_part_q24 >> 8))) >> 16);
++                break;
++            case FX_FADE_IN:
++                vol_q15 = (vol_q15 * tmod_q15) >> 15;
++                break;
++            case FX_FADE_OUT:
++                vol_q15 = (vol_q15 * (32768 - tmod_q15)) >> 15;
++                break;
++            case FX_ARP_FAST:
++            case FX_ARP_SLOW: {
++                uint32_t m = (speed <= 8 ? 32u : 16u) / (fx == FX_ARP_FAST ? 4u : 8u);
++                uint32_t n = (uint32_t)(((uint64_t)(off_q24 >> 12) * m * (uint32_t)speed * 255u) >> 24);
++                int arp_note = (note_idx & ~3) | ((int)n & 3);
++                uint8_t ak = sfx.notes[arp_note].getKey();
++                freq_q16 = (ak < 64) ? s_phase_inc_q16[ak] : 0u;
++                break;
++            }
++            default:
++                break;
++        }
++        if (freq_shift_q16 != 65536u)
++            freq_q16 = (uint32_t)(((uint64_t)freq_q16 * freq_shift_q16) >> 16);
++
++        bool custom = (bool)cur_n.getCustom() && childCh != NULL;
++        int32_t sample_q15;
++        if (custom) {
++            if (childCh->sfxId == -1) {
++                childCh->sfxId = cur_n.getWaveform();
++                childCh->offset = 0.0f;
++                childCh->current_note.phi = 0.0f;
++                childCh->can_loop = true;
++                childCh->is_music = false;
++                childCh->prev_note.n.setKey(0);
++                childCh->prev_note.n.setVolume(0);
++                c_off_q24 = 0u;
++                c_phi_q16 = 0u;
++            }
++            uint32_t c_shift_q16 = (uint32_t)(((uint64_t)freq_q16 << 16) / s_c2_freq_q16);
++            int32_t cw = evalChildSfxSampleFixed(_memory, *childCh, c_off_q24, c_phi_q16, c_shift_q16);
++            sample_q15 = (vol_q15 * cw) >> 15;
++        } else {
++            int32_t w = evalWaveformFixed(cur_n.getWaveform(), phi_q16);
++            sample_q15 = (vol_q15 * w) >> 15;
++        }
++        phi_q16 = (phi_q16 + freq_q16) & 0x007FFFFFu;
++
++        if (crossfade_q15 > 0) {
++            note prev_n = ch.prev_note.n;
++            uint8_t pkey = prev_n.getKey();
++            uint32_t pfreq_q16 = (pkey < 64) ? s_phase_inc_q16[pkey] : 0u;
++            int32_t pvol_q15 = s_vol_q15[prev_n.getVolume() & 7];
++            int pfx = prev_n.getEffect();
++            int32_t ptmod_q15 = 32768 + tmod_q15;
++            switch (pfx) {
++                case FX_VIBRATO: {
++                    uint32_t vib_idx = (((uint32_t)ptmod_q15 * (uint32_t)speed * 127u) >> 18) & 0xFFu;
++                    int32_t vt = s_vib_lut[vib_idx];
++                    pfreq_q16 = (uint32_t)((int64_t)pfreq_q16 + (((int64_t)pfreq_q16 * 3898 * vt) >> 30));
++                    break;
++                }
++                case FX_DROP:
++                    pfreq_q16 = (uint32_t)(((uint64_t)pfreq_q16 * (65536u - (offset_part_q24 >> 8))) >> 16);
++                    break;
++                case FX_FADE_OUT:
++                    pvol_q15 = 0;
++                    break;
++                case FX_ARP_FAST:
++                case FX_ARP_SLOW: {
++                    uint32_t m = (speed <= 8 ? 32u : 16u) / (pfx == FX_ARP_FAST ? 4u : 8u);
++                    uint32_t n = (uint32_t)(((uint64_t)(off_q24 >> 12) * m * (uint32_t)speed * 255u) >> 24);
++                    int arp_note = (note_idx & ~3) | ((int)n & 3);
++                    uint8_t ak = sfx.notes[arp_note].getKey();
++                    pfreq_q16 = (ak < 64) ? s_phase_inc_q16[ak] : 0u;
++                    break;
++                }
++                default:
++                    break;
++            }
++            if (freq_shift_q16 != 65536u)
++                pfreq_q16 = (uint32_t)(((uint64_t)pfreq_q16 * freq_shift_q16) >> 16);
++
++            int32_t psample_q15;
++            if (prev_n.getCustom() && prevChildCh != NULL) {
++                if (prevChildCh->sfxId == -1) {
++                    prevChildCh->sfxId = prev_n.getWaveform();
++                    prevChildCh->offset = 0.0f;
++                    prevChildCh->current_note.phi = 0.0f;
++                    prevChildCh->can_loop = true;
++                    prevChildCh->is_music = false;
++                    prevChildCh->prev_note.n.setKey(0);
++                    prevChildCh->prev_note.n.setVolume(0);
++                    pc_off_q24 = 0u;
++                    pc_phi_q16 = 0u;
++                }
++                uint32_t pc_shift_q16 = (uint32_t)(((uint64_t)pfreq_q16 << 16) / s_c2_freq_q16);
++                int32_t pcw = evalChildSfxSampleFixed(_memory, *prevChildCh, pc_off_q24, pc_phi_q16, pc_shift_q16);
++                psample_q15 = (pvol_q15 * pcw) >> 15;
++            } else {
++                int32_t pw = evalWaveformFixed(prev_n.getWaveform(), prev_phi_q16);
++                psample_q15 = (pvol_q15 * pw) >> 15;
++            }
++            prev_phi_q16 = (prev_phi_q16 + pfreq_q16) & 0x007FFFFFu;
++            sample_q15 = ((sample_q15 * (32768 - crossfade_q15)) + (psample_q15 * crossfade_q15)) >> 15;
++        }
++
++        if (note_idx == len_notes - 1) {
++            uint32_t rem_q24 = (1u << 24) - offset_part_q24;
++            if (rem_q24 < fade_dur_q24) {
++                int32_t env_q15 = (int32_t)(((uint64_t)(fade_dur_q24 - rem_q24) << 15) / fade_dur_q24);
++                sample_q15 = (sample_q15 * env_q15) >> 15;
++            }
++        }
++
++        if (apply_music_vol) {
++            sample_q15 = (sample_q15 * music_vol_q15) >> 15;
++        }
++
++        out[i] += sample_q15;
++
++        off_q24 = next_off_q24;
++        if (next_off_q24 >= (32u << 24)) {
++            ch.sfxId = -1;
++            if (custom && childCh)
++                childCh->sfxId = -1;
++        } else if (next_note_idx != note_idx) {
++            prev_phi_q16 = phi_q16;
++            ch.prev_note.n = cur_n;
++            ch.prev_note.phi = (float)prev_phi_q16 * (1.0f / 65536.0f);
++            ch.current_note.n = sfx.notes[next_note_idx];
++            if (custom && childCh) {
++                if (!sfx.notes[next_note_idx].getCustom() ||
++                    sfx.notes[next_note_idx].getKey() != sfx.notes[note_idx].getKey() ||
++                    sfx.notes[next_note_idx].getWaveform() != sfx.notes[note_idx].getWaveform()) {
++                    childCh->offset = (float)c_off_q24 * (1.0f / 16777216.0f);
++                    childCh->current_note.phi = (float)c_phi_q16 * (1.0f / 65536.0f);
++                    ch.rotateChannels();
++                    pc_off_q24 = c_off_q24;
++                    pc_phi_q16 = c_phi_q16;
++                    childCh->sfxId = -1;
++                }
++            }
++        }
++    }
++
++    ch.offset = (float)off_q24 * (1.0f / 16777216.0f);
++    ch.current_note.phi = (float)phi_q16 * (1.0f / 65536.0f);
++    ch.prev_note.phi = (float)prev_phi_q16 * (1.0f / 65536.0f);
++    if (childCh) {
++        childCh->offset = (float)c_off_q24 * (1.0f / 16777216.0f);
++        childCh->current_note.phi = (float)c_phi_q16 * (1.0f / 65536.0f);
++    }
++    if (prevChildCh) {
++        prevChildCh->offset = (float)pc_off_q24 * (1.0f / 16777216.0f);
++        prevChildCh->current_note.phi = (float)pc_phi_q16 * (1.0f / 65536.0f);
++    }
++}
++#endif
++
+ void Audio::FillAudioBuffer(void *audioBuffer, size_t offset, size_t size){
+-    if (audioBuffer == nullptr) {
++    (void)offset;
++    if (audioBuffer == nullptr || size == 0) {
+         return;
+     }
+ 
+     uint32_t *buffer = (uint32_t *)audioBuffer;
+ 
+-    for (size_t i = 0; i < size; ++i){
+-        int32_t sample = 0;
+-
+ #ifdef SF2000
+-        // Process only 3 channels instead of 4 for better performance
+-        for (int c = 0; c < 3; ++c) {
+-            sample += this->getSampleForChannel(c);
++    initFixedAudioTables();
++
++    int32_t mixBuf[1024];
++    size_t pos = 0;
++    while (pos < size) {
++        size_t chunk = size - pos;
++        if (chunk > 1024)
++            chunk = 1024;
++        memset(mixBuf, 0, chunk * sizeof(int32_t));
++
++        size_t done = 0;
++        while (done < chunk) {
++            size_t sub = chunk - done;
++            bool music_active = (_audioState._musicChannel.pattern != -1);
++            uint32_t music_inc_q24 = 0;
++            uint32_t music_off_q24 = 0;
++            uint32_t music_len_q24 = 0;
++
++            if (music_active) {
++                int mspd = _audioState._musicChannel.speed < 1 ? 1 : (int)_audioState._musicChannel.speed;
++                music_inc_q24 = s_inv_speed_q24[mspd];
++                music_off_q24 = floatOffsetToQ24(_audioState._musicChannel.offset);
++                music_len_q24 = (uint32_t)_audioState._musicChannel.length << 24;
++                if (music_off_q24 >= music_len_q24) {
++                    sub = 1;
++                } else if (music_inc_q24 > 0) {
++                    uint32_t rem = music_len_q24 - music_off_q24;
++                    size_t to_end = (size_t)((rem + music_inc_q24 - 1) / music_inc_q24);
++                    if (to_end < sub)
++                        sub = to_end;
++                }
++                if (_audioState._musicChannel.volume_step < 0.0f && _audioState._musicChannel.volume > 0.0f) {
++                    float step_per_sample = -_audioState._musicChannel.volume_step / 22050.0f;
++                    if (step_per_sample > 0.0f) {
++                        size_t to_zero = (size_t)(_audioState._musicChannel.volume / step_per_sample) + 1;
++                        if (to_zero < sub)
++                            sub = to_zero;
++                    }
++                }
++            }
++
++            float clamped_vol = clamp(_audioState._musicChannel.volume, 0.0f, 1.0f);
++            int32_t music_vol_q15 = (int32_t)(clamped_vol * 32768.0f);
++
++            for (int c = 0; c < 4; ++c) {
++                rawSfxChannel &ch = _audioState._sfxChannels[c];
++                if (ch.sfxId < 0 || ch.sfxId > 63)
++                    continue;
++                int32_t chanBuf[1024];
++                memset(chanBuf, 0, sub * sizeof(int32_t));
++                mixSfxFixed(ch, 65536u, music_vol_q15, ch.is_music, chanBuf, sub, 0);
++                if (_memory->hwState.distort & (1 << c)) {
++                    for (size_t i = 0; i < sub; ++i)
++                        mixBuf[done + i] += (chanBuf[i] / 0x1000) * 0x1249;
++                } else {
++                    for (size_t i = 0; i < sub; ++i)
++                        mixBuf[done + i] += chanBuf[i];
++                }
++            }
++
++            if (music_active) {
++                music_off_q24 += (uint32_t)sub * music_inc_q24;
++                _audioState._musicChannel.offset = (float)music_off_q24 * (1.0f / 16777216.0f);
++                if (_audioState._musicChannel.volume_step != 0.0f) {
++                    _audioState._musicChannel.volume = clamp(
++                        _audioState._musicChannel.volume + (_audioState._musicChannel.volume_step / 22050.0f) * (float)sub,
++                        0.0f, 1.0f);
++                }
++                if (_audioState._musicChannel.volume_step < 0.0f && _audioState._musicChannel.volume <= 0.0f) {
++                    for (int i = 0; i < 4; ++i) {
++                        if (_audioState._sfxChannels[i].is_music)
++                            _audioState._sfxChannels[i].sfxId = -1;
++                    }
++                    _audioState._musicChannel.pattern = -1;
++                } else if (music_off_q24 >= music_len_q24) {
++                    int16_t next_pattern = _audioState._musicChannel.pattern + 1;
++                    int16_t next_count = _audioState._musicChannel.count + 1;
++                    if (_memory->songs[_audioState._musicChannel.pattern].getStop()) {
++                        next_pattern = -1;
++                        next_count = _audioState._musicChannel.count;
++                    } else if (_memory->songs[_audioState._musicChannel.pattern].getLoop()) {
++                        while (--next_pattern > 0 && !_memory->songs[next_pattern].getStart())
++                            ;
++                    }
++                    _audioState._musicChannel.count = next_count;
++                    set_music_pattern(next_pattern);
++                }
++            }
++
++            done += sub;
+         }
++
++        for (size_t i = 0; i < chunk; ++i) {
++            int32_t sample = mixBuf[i];
++            if (sample > 0x7fff)
++                sample = 0x7fff;
++            else if (sample < -0x8000)
++                sample = -0x8000;
++            buffer[pos + i] = ((uint32_t)sample << 16) | ((uint32_t)sample & 0xffffu);
++        }
++        pos += chunk;
++    }
+ #else
++    for (size_t i = 0; i < size; ++i){
++        int32_t sample = 0;
++
+         for (int c = 0; c < 4; ++c) {
+             sample += this->getSampleForChannel(c);
+         }
+-#endif
+ 
+ 	    if (sample > 0x7fff) sample = 0x7fff; else if (sample < -0x8000) sample = -0x8000;
+ 
+         //buffer is stereo, so just send the mono sample to both channels
+         buffer[i] = (sample<<16) | (sample & 0xffff);
+     }
++#endif
+ }
+ 
+ 
+@@ -342,12 +886,7 @@ int16_t Audio::getMusicTickCount(){
+ 
+ float Audio::getSampleForSfx(rawSfxChannel &channel, float freqShift) {
+     using std::max;
+-#ifdef SF2000
+-    // Reduce audio quality for performance on SF2000 MIPS soft-FPU
+-    int const samples_per_second = 11025; // Half rate for 2x performance
+-#else
+     int const samples_per_second = 22050;
+-#endif
+ 
+     if (channel.sfxId < 0 || channel.sfxId > 63) {
+         //no (valid) sfx here. return silence
+@@ -361,13 +900,8 @@ float Audio::getSampleForSfx(rawSfxChannel &channel, float freqShift) {
+     // PICO-8 exports instruments as 22050 Hz WAV files with 183 samples
+     // per speed unit per note, so this is how much we should advance
+     // Pre-compute and avoid expensive divisions - critical for MIPS soft-FPU
+-#ifdef SF2000
+-    static const float inv_183_samples = 11025.0f / 183.0f; // Pre-computed for SF2000
+-    static const float inv_samples_per_second = 1.0f / 11025.0f;
+-#else  
+     static const float inv_183_samples = 22050.0f / 183.0f; // Pre-computed constant
+     static const float inv_samples_per_second = 1.0f / 22050.0f;
+-#endif
+     float const offset_per_second = inv_183_samples / speed;
+     float const offset_per_sample = offset_per_second * inv_samples_per_second;
+     float next_offset = channel.offset + offset_per_sample;
+@@ -466,12 +1000,7 @@ float Audio::getSampleForSfx(rawSfxChannel &channel, float freqShift) {
+ float Audio::getSampleForNote(noteChannel &channel, rawSfxChannel &parentChannel, rawSfxChannel *childChannel, note prev_note, float freqShift, bool forceRemainder) {
+     using std::max;
+     float offset = parentChannel.offset;
+-#ifdef SF2000
+-    // Reduce audio quality for performance on SF2000 MIPS soft-FPU
+-    int const samples_per_second = 11025; // Half rate for 2x performance
+-#else
+     int const samples_per_second = 22050;
+-#endif
+     //TODO: apply effects
+     int const fx = channel.n.getEffect();
+     uint8_t key = channel.n.getKey();
+@@ -491,11 +1020,7 @@ float Audio::getSampleForNote(noteChannel &channel, rawSfxChannel &parentChannel
+ 
+     // Speed must be 1—255 otherwise the SFX is invalid
+     int const speed = max(1, (int)sfx.speed);
+-#ifdef SF2000
+-    static const float inv_183_samples_note = 11025.0f / 183.0f; // Pre-computed for SF2000
+-#else
+     static const float inv_183_samples_note = 22050.0f / 183.0f; // Pre-computed
+-#endif
+     float const offset_per_second = inv_183_samples_note / speed;
+     int const note_idx = fast_floor(offset);
+ 
+@@ -581,23 +1106,14 @@ int16_t Audio::getSampleForChannel(int channel){
+     using std::floor;
+     using std::max;
+ 
+-#ifdef SF2000
+-    // Reduce audio quality for performance on SF2000 MIPS soft-FPU
+-    int const samples_per_second = 11025; // Half rate for 2x performance
+-#else
+     int const samples_per_second = 22050;
+-#endif
+ 
+     int16_t sample = 0;
+ 
+     // Advance music using the master channel
+     if (channel == _audioState._musicChannel.master && _audioState._musicChannel.pattern != -1)
+     {
+-#ifdef SF2000
+-        float const offset_per_second = 11025.0f / (183.0f * _audioState._musicChannel.speed);
+-#else
+         float const offset_per_second = 22050.0f / (183.0f * _audioState._musicChannel.speed);
+-#endif
+         float const offset_per_sample = offset_per_second / samples_per_second;
+         _audioState._musicChannel.offset += offset_per_sample;
+         _audioState._musicChannel.volume += _audioState._musicChannel.volume_step / samples_per_second;
+diff --git a/source/Audio.h b/source/Audio.h
+index 4d8f4dbd4fb57482b1f1509f669859a47adcd96e..783233d37fd7199f0845de8fd7954c8a8786314a 100644
+--- a/source/Audio.h
++++ b/source/Audio.h
+@@ -91,6 +91,9 @@ class Audio {
+     audioState_t _audioState;
+ 
+     void set_music_pattern(int pattern);
++#ifdef SF2000
++    void mixSfxFixed(rawSfxChannel &ch, uint32_t freq_shift_q16, int32_t music_vol_q15, bool apply_music_vol, int32_t *out, size_t count, int depth);
++#endif
+     
+     public:
+     float getSampleForSfx(rawSfxChannel &channel, float freqShift = 1.0f);
+-- 
+2.43.0
+

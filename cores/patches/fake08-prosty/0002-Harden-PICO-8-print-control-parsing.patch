@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: UniFrog CI <ci@unifrog.local>
 Date: Mon, 22 Jun 2026 07:19:09 +0000
-Subject: [PATCH 2/2] Harden PICO-8 print control parsing
+Subject: [PATCH 2/3] Harden PICO-8 print control parsing
 
 Validate every control-sequence operand before advancing through the string, bound emulated RAM writes, remove the unused fixed-size audio buffer, prevent zero-width tab modulo operations, and restore the solid-background disable selector.
 ---
@@ -237,5 +237,5 @@ index 2b423a97067b0012ed2ff5cea132b5370cb8201b..aa4d4e0f9e435bc3d4e7b7df36f1910a
  			fgColor = p0CharToNum(fgColChar);
  			_ph_graphics->color(fgColor);
 -- 
-2.54.0
+2.43.0
 

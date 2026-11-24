@@ -1,0 +1,299 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: UniFrog CI <ci@unifrog.local>
+Date: Tue, 24 Nov 2026 14:45:08 +0700
+Subject: [PATCH 2/2] Optimize SF2000: enable WAD RAM cache, 22050Hz integer
+ resampler, disable external MP3 lookup, -O3
+
+---
+ Makefile                  |   6 +-
+ libretro/libretro.c       |   6 +-
+ libretro/libretro_sound.c | 134 ++++++++++++++++++++++++++++++++++++++
+ src/m_misc.c              |  10 +++
+ 4 files changed, 153 insertions(+), 3 deletions(-)
+
+diff --git a/Makefile b/Makefile
+index cd4c1e7504e29c034c15ee3075b4edf2844c3e90..cac88efb49b4440bd51076d07f2a4c1d641a8e33 100644
+--- a/Makefile
++++ b/Makefile
+@@ -290,14 +290,13 @@ else ifeq ($(platform), sf2000)
+ 	CXX = $(MIPS)g++
+ 	AR = $(MIPS)ar
+ 	CFLAGS =-EL -march=mips32 -mtune=mips32 -msoft-float -ffast-math
+-	CFLAGS+=-G0 -mno-abicalls -fno-pic
++	CFLAGS+=-G0 -mno-abicalls -fno-pic -ffunction-sections -fdata-sections
+ 	# -ffreestanding
+ 	CFLAGS+=-I../..
+ 	CFLAGS+=-DSF2000 -DHAVE_STRL
+ 	CFLAGS+= -DHAVE_STRLWR -std=gnu89 -Wno-error=incompatible-pointer-types
+ 	CXXFLAGS=$(CFLAGS) -fno-use-cxa-atexit
+ 	STATIC_LINKING = 1
+-	HAVE_LOW_MEMORY = 1
+ 
+ else ifeq ($(platform), xenon)
+    EXT=a
+@@ -669,6 +668,9 @@ else
+ endif
+    CFLAGS   += -DDEBUG
+    CXXFLAGS += -DDEBUG
++else ifeq ($(platform), sf2000)
++   CFLAGS   += -O3 -DNDEBUG
++   CXXFLAGS += -O3 -DNDEBUG
+ else
+ ifneq (,$(findstring msvc,$(platform)))
+    CFLAGS   += -MT
+diff --git a/libretro/libretro.c b/libretro/libretro.c
+index 628bee5382a095ca390d81055a4c6bb72fa95fcf..be5f8aca5cda75b2fd02c506cf4fa54eeea250ed 100644
+--- a/libretro/libretro.c
++++ b/libretro/libretro.c
+@@ -332,7 +332,7 @@ static char *FindFileInDir(const char* dir, const char* wfname, const char* ext)
+ #if !defined(SF2000)
+       log_cb(RETRO_LOG_ERROR, "FindFileInDir: not found %s in %s\n", wfname, dir);
+ #else
+-      log_cb(RETRO_LOG_ERROR, "FindFileInDir: not found %s%s in %s\n", wfname, ext ? ext : ".<null>", dir);
++      log_cb(RETRO_LOG_DEBUG, "FindFileInDir: not found %s%s in %s\n", wfname, ext ? ext : ".<null>", dir);
+ #endif
+ 
+    free(p);
+@@ -464,7 +464,11 @@ void retro_get_system_av_info(struct retro_system_av_info *info)
+       info->timing.fps = TICRATE;
+       break;
+   }
++#ifdef SF2000
++  info->timing.sample_rate    = 22050.0;
++#else
+   info->timing.sample_rate    = 44100.0;
++#endif
+   info->geometry.base_width   = SCREENWIDTH;
+   info->geometry.base_height  = SCREENHEIGHT;
+   info->geometry.max_width    = SCREENWIDTH;
+diff --git a/libretro/libretro_sound.c b/libretro/libretro_sound.c
+index 0b745be8c4dfbc91a51cd393f3eb3d36e526995b..afd4795586390aaa7672b736c6c1a8e8751a9de2 100644
+--- a/libretro/libretro_sound.c
++++ b/libretro/libretro_sound.c
+@@ -26,7 +26,11 @@
+ 
+ #include "../src/mus2mid.h"
+ 
++#ifdef SF2000
++#define SAMPLERATE    		(2 * 11025)
++#else
+ #define SAMPLERATE    		(4 * 11025)
++#endif
+ #define SAMPLECOUNT_35		(SAMPLERATE / 35)
+ #define NUM_CHANNELS		32
+ #define BUFMUL           4
+@@ -103,6 +107,7 @@ static channel_t channels[NUM_CHANNELS];
+ 
+ int vol_lookup[128*256];
+ 
++#ifndef SF2000
+ static double R_ceil(double x)
+ {
+    if (x > LONG_MAX)
+@@ -132,6 +137,7 @@ static double R_floor(double x)
+       return x + y - 1;
+    return x + y;
+ }
++#endif
+ 
+ /* i_sound */
+ 
+@@ -169,6 +175,59 @@ static void* I_SndLoadSample(const char* sfxname, int* len)
+     memcpy(&orig_rate, sfxlump_data+2, 2);
+     orig_rate       = SHORT (orig_rate);
+ 
++#ifdef SF2000
++    if (orig_rate == 0)
++        orig_rate = 11025;
++
++    if (orig_rate == SAMPLERATE)
++    {
++        padded_sfx_len  = ((sfxlump_len + (SAMPLECOUNT_35-1)) / SAMPLECOUNT_35) * SAMPLECOUNT_35;
++        padded_sfx_data = (uint8_t*)malloc(padded_sfx_len);
++        if (padded_sfx_data)
++        {
++            memcpy(padded_sfx_data, sfxlump_sound, sfxlump_len);
++            if (padded_sfx_len > sfxlump_len)
++                memset(padded_sfx_data + sfxlump_len, 128, padded_sfx_len - sfxlump_len);
++        }
++    }
++    else if (orig_rate * 2 == SAMPLERATE)
++    {
++        int out_len = sfxlump_len * 2;
++        padded_sfx_len  = ((out_len + (SAMPLECOUNT_35-1)) / SAMPLECOUNT_35) * SAMPLECOUNT_35;
++        padded_sfx_data = (uint8_t*)malloc(padded_sfx_len);
++        if (padded_sfx_data)
++        {
++            for (i = 0; i < sfxlump_len; i++)
++            {
++                uint8_t s = sfxlump_sound[i];
++                padded_sfx_data[i * 2] = s;
++                padded_sfx_data[i * 2 + 1] = s;
++            }
++            if (padded_sfx_len > out_len)
++                memset(padded_sfx_data + out_len, 128, padded_sfx_len - out_len);
++        }
++    }
++    else
++    {
++        uint32_t out_len = (uint32_t)(((uint64_t)sfxlump_len * SAMPLERATE + orig_rate - 1) / orig_rate);
++        uint64_t step_q16 = (((uint64_t)orig_rate << 16) + (SAMPLERATE / 2)) / SAMPLERATE;
++        uint64_t pos_q16 = 0;
++        padded_sfx_len  = (((int)out_len + (SAMPLECOUNT_35-1)) / SAMPLECOUNT_35) * SAMPLECOUNT_35;
++        padded_sfx_data = (uint8_t*)malloc(padded_sfx_len);
++        if (padded_sfx_data)
++        {
++            for (i = 0; i < padded_sfx_len; i++)
++            {
++                x = (int)(pos_q16 >> 16);
++                if (x < sfxlump_len)
++                    padded_sfx_data[i] = sfxlump_sound[x];
++                else
++                    padded_sfx_data[i] = 128;
++                pos_q16 += step_q16;
++            }
++        }
++    }
++#else
+     times           = 48000.0f / (float)orig_rate;
+ 
+     padded_sfx_len  = ((sfxlump_len * R_ceil(times) + (SAMPLECOUNT_35-1)) / SAMPLECOUNT_35) * SAMPLECOUNT_35;
+@@ -183,6 +242,7 @@ static void* I_SndLoadSample(const char* sfxname, int* len)
+         else
+             padded_sfx_data[i] = 128; // fill the rest with silence
+     }
++#endif
+ 
+     Z_Free ((void*) sfxlump_data); //  free original lump
+ 
+@@ -388,7 +448,22 @@ void I_UpdateSound(void)
+    step       = 2;
+    frames     = 0;
+ 
++#ifdef SF2000
++   if (tic_vars.fps == 60 && SAMPLERATE == 22050)
++   {
++      static int half_toggle = 0;
++      out_frames = 367 + half_toggle;
++      half_toggle ^= 1;
++   }
++   else
++   {
++      out_frames = (tic_vars.sample_step)? tic_vars.sample_step : SAMPLECOUNT_35;
++   }
++   if (out_frames > SAMPLECOUNT_35)
++      out_frames = SAMPLECOUNT_35;
++#else
+    out_frames = (tic_vars.sample_step)? tic_vars.sample_step : SAMPLECOUNT_35;
++#endif
+ 
+ #ifdef MUSIC_SUPPORT
+    if (music_handle && current_player)
+@@ -397,6 +472,64 @@ void I_UpdateSound(void)
+ #endif
+       memset(mad_audio_buf, 0, out_frames * 4);
+ 
++#ifdef SF2000
++   {
++      int active_chans[NUM_CHANNELS];
++      int nactive = 0;
++      for (chan = 0; chan < NUM_CHANNELS; chan++)
++      {
++         if (channels[chan].snd_start_ptr)
++            active_chans[nactive++] = chan;
++      }
++
++      if (nactive == 0)
++      {
++         memcpy(mixbuffer, mad_audio_buf, (size_t)out_frames * 4);
++      }
++      else
++      {
++         leftend = mixbuffer + out_frames * step;
++         while (leftout < leftend)
++         {
++            int a;
++            dl = mad_audio_buf[frames * 2 + 0];
++            dr = mad_audio_buf[frames * 2 + 1];
++
++            for (a = 0; a < nactive; a++)
++            {
++               chan = active_chans[a];
++               if (channels[chan].snd_start_ptr)
++               {
++                  sample = *channels[chan].snd_start_ptr;
++                  dl += channels[chan].leftvol[sample];
++                  dr += channels[chan].rightvol[sample];
++                  channels[chan].snd_start_ptr++;
++                  if (!(channels[chan].snd_start_ptr < channels[chan].snd_end_ptr))
++                     memset(&channels[chan], 0, sizeof(channel_t));
++               }
++            }
++
++            if (dl > 0x7fff)
++               *leftout = 0x7fff;
++            else if (dl < -0x8000)
++               *leftout = -0x8000;
++            else
++               *leftout = dl;
++
++            if (dr > 0x7fff)
++               *rightout = 0x7fff;
++            else if (dr < -0x8000)
++               *rightout = -0x8000;
++            else
++               *rightout = dr;
++
++            leftout += step;
++            rightout += step;
++            frames++;
++         }
++      }
++   }
++#else
+    // Determine end, for left channel only (right channel is implicit).
+    leftend = mixbuffer + out_frames * step;
+ 
+@@ -455,6 +588,7 @@ void I_UpdateSound(void)
+       rightout += step;
+       frames++;
+    }
++#endif
+ 
+    for (frames = 0; frames < out_frames; )
+       frames += audio_batch_cb(mixbuffer + (frames << 1), out_frames - frames);
+diff --git a/src/m_misc.c b/src/m_misc.c
+index c35afb1428fb3a389284f1bf54c997c84d729a17..a51d63c80def69ac7c8d106ba212fa868744d9a8 100644
+--- a/src/m_misc.c
++++ b/src/m_misc.c
+@@ -196,8 +196,13 @@ default_t defaults[] =
+    def_bool,ss_gen, NULL, NULL}, // killough 10/98 - enable flashing HOM indicator
+   {"demo_insurance",{&default_demo_insurance, NULL},{2, NULL},0,2,  // killough 3/31/98
+    def_int,ss_none, NULL, NULL}, // 1=take special steps ensuring demo sync, 2=only during recordings
++#ifdef SF2000
++  {"level_precache",{(int*)&precache, NULL},{1, NULL},0,1,
++   def_bool,ss_none, NULL, NULL}, // precache level data?
++#else
+   {"level_precache",{(int*)&precache, NULL},{0, NULL},0,1,
+    def_bool,ss_none, NULL, NULL}, // precache level data?
++#endif
+   {"demo_smoothturns", {&demo_smoothturns, NULL},  {0, NULL},0,1,
+    def_bool,ss_gen, NULL, NULL},
+   {"demo_smoothturnsfactor", {&demo_smoothturnsfactor, NULL},  {6, NULL},1,SMOOTH_PLAYING_MAXFACTOR,
+@@ -293,8 +298,13 @@ default_t defaults[] =
+   {"music_volume",{&snd_MusicVolume, NULL},{8, NULL},0,15, def_int,ss_none, NULL, NULL},
+   {"mus_pause_opt",{&mus_pause_opt, NULL},{2, NULL},0,2, // CPhipps - music pausing
+    def_int, ss_none, NULL, NULL}, // 0 = kill music when paused, 1 = pause music, 2 = let music continue
++#ifdef SF2000
++  {"mus_load_external", {&mus_load_external, NULL},  {0, NULL},0,2,
++    def_int,ss_gen, NULL, NULL}, // 0 = never load external music files, 1 = always load it, 2 = only from iwads
++#else
+   {"mus_load_external", {&mus_load_external, NULL},  {2, NULL},0,2,
+     def_int,ss_gen, NULL, NULL}, // 0 = never load external music files, 1 = always load it, 2 = only from iwads
++#endif
+   {"snd_channels",{&default_numChannels, NULL},{8, NULL},1,32,
+    def_int,ss_gen, NULL, NULL}, // number of audio events simultaneously // killough
+ 
+-- 
+2.43.0
+

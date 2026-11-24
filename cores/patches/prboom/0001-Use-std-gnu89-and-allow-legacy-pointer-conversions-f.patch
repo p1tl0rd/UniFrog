@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: UniFrog Builder <unifrog@local>
 Date: Tue, 24 Nov 2026 14:02:26 +0700
-Subject: [PATCH] Use -std=gnu89 and allow legacy pointer conversions for
+Subject: [PATCH 1/2] Use -std=gnu89 and allow legacy pointer conversions for
  SF2000 GCC
 
 ---

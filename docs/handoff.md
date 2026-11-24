@@ -52,3 +52,18 @@
   - Cave Story Freeware (`/ROMS/cavestory/Cave Story (en)/Doukutsu.exe`)
   - Wolfenstein 3D v1.4 Shareware (`/ROMS/wolf3d/Wolfenstein 3D v1.4 (Shareware)/VSWAP.WL1` + `bios/ecwolf.pk3`)
 - Updated `bisrv.asd`, `unifrog.bin`, `manifest.ini`, and rebuilt `{frogui,snes9x2005-prosty,snes9x2002-prosty,prboom,nxengine,ecwolf}.bin` deployed to `/media/two/C2B3-81CF` without touching slow cores or user saves.
+
+9. **Performance & Load Fixes (`fake08-prosty`, `prboom`, `nxengine`) + Core Whole-Archive Support:**
+   - **`fake08-prosty` (`cores/patches/fake08-prosty/0003-...`, `cores/patches/fake08-prosty-z8lua/0002-...`):**
+     - Replaced `FastFmod1`/`FastFabs` soft-float audio synthesis on `SF2000` with pure-integer Q16/fixed-point mixing (`mixSfxFixed`, `evalChildSfxSampleFixed`, `evalWaveformFixed`) at consistent `22050` Hz (removing the `11025` Hz mismatch that caused 50% speed and buffer overflows).
+     - Replaced software `sin`/`cos`/`sqrt` in `libs/z8lua/lpico8lib.c` with a 257-entry Q16.16 LUT + integer 64-bit `isqrt`.
+     - Disabled the forced 90-frame splash screen on `SF2000`, synced 60fps (`367`/`368` samples) vs 30fps (`735` samples every other frame) audio batching, skipped redundant pixel conversion on odd dupe frames of 30fps carts, added a `pal16[16]` 1x render fast loop, and switched `platform=sf2000` non-DEBUG to `-O3`.
+   - **`prboom` (`cores/patches/prboom/0002-...`):**
+     - Removed `HAVE_LOW_MEMORY = 1` (`-DMEMORY_LOW`) so `w_wad.c` enables WAD RAM caching inside external RAM, switched `platform=sf2000` to `-O3 -DNDEBUG -ffunction-sections -fdata-sections`, defaulted `level_precache=1` and `mus_load_external=0` (eliminating multi-second FAT32 `.mp3` directory scans on track changes and changing miss logs to `RETRO_LOG_DEBUG`), and switched `libretro_sound.c`/`libretro.c` on `SF2000` to integer `22050` Hz resampling + `while (leftout < leftend)` + active-channel pre-collection.
+   - **`nxengine` (`Makefile`, `cores/manifest.mk`, `cores/patches/nxengine/0001-...`):**
+     - Enabled `FRONTEND_SUPPORTS_RGB565 = 1`, `SINGLE_PRECISION_FLOATS = 1`, `-O3 -DNDEBUG`, and `-fno-rtti -fno-exceptions -fno-use-cxa-atexit` for C++ `.cpp` objects in `platform=sf2000`.
+     - Added in-RAM `Doukutsu.exe` caching (`exe_mem_load`/`exe_mem_read`/`exe_mem_getl`/`exe_mem_getfloat` skipping the 4-byte padding in `rfgetfloat`, matching `common/misc.c`) plus lazy on-demand `copen()` asset loading so startup does not open 399 individual FAT32 files; widened `hash_struct.filename` to `128`; replaced unaligned `*(double *)` casts in `common/misc.c` with `memcpy`.
+     - Added `NXENGINE_CORE_WHOLE_ARCHIVE := 1` in `Makefile` (`CORE_MODULE_RULES`) so all 69 `INITFUNC(AIRoutines)` static constructors inside `nxengine_libretro_sf2000.a` are preserved in `__CTOR_LIST__`.
+
+## Standing Workflow Rule
+- After every fix: verify clean build, deploy updated binaries/configs to `/media/two/C2B3-81CF`, commit & push changes to `origin/dev`, and create an SD backup snapshot (excluding `ROMS` and `System Volume Information`) in `/home/two/Code/backups/`.

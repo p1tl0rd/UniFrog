@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: "Axel Garcia K." <git@axelgk.com>
 Date: Mon, 22 Jun 2026 06:26:13 +0000
-Subject: [PATCH] Fix fixed-point number I/O on SF2000
+Subject: [PATCH 1/2] Fix fixed-point number I/O on SF2000
 
 Convert Lua fixed-point values through typed integer temporaries before variadic stdio calls. This removes undefined varargs and scanf behavior and preserves PICO-8 raw-value formatting on the 32-bit target.
 ---
@@ -79,5 +79,5 @@ index 8aadee573ffca1e1d770cfb7ac88706f3e9e6646..8712b4e06ac072bcfb8157534e9121ff
 
 base-commit: f0eb8df934c5ad588b12ce40bf1ebf1c2d63edf6
 -- 
-2.54.0
+2.43.0
 

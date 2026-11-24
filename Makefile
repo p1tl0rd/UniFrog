@@ -509,6 +509,7 @@ LIBRETRO_CORE_IDS := $(foreach var,$(LIBRETRO_CORE_VARS),$($(var)_CORE_ID))
 JS2300_CORE_LIB := $(BUILD)/core_modules/js2300_libretro_core.a
 JS2300_CORE_SUPPORT_LIBS := $(LIBJS2300)
 JS2300_CORE_OBJECTS := $(BUILD)/core_modules/js2300_libretro_core.o
+NXENGINE_CORE_WHOLE_ARCHIVE := 1
 EFFECTIVE_CORE_IDS := $(strip $(if $(CORE_IDS),$(CORE_IDS),$(if $(filter 1,$(CORE_BATCH_FAST)),$(FAST_CORE_IDS),$(LIBRETRO_CORE_IDS))))
 SELECTED_CORE_LICENSE_SPECS := $(foreach spec,$(CORE_LICENSE_SPECS),$(if $(filter $(word 1,$(subst |, ,$(spec))),$(EFFECTIVE_CORE_IDS)),$(spec)))
 SELECTED_CORE_LICENSE_FILES := $(foreach spec,$(SELECTED_CORE_LICENSE_SPECS),$(word 2,$(subst |, ,$(spec))))
@@ -1292,7 +1293,7 @@ $(BUILD)/lvgl/%.o: $(LVGL_DIR)/src/%.c | $(BUILD)
 define CORE_MODULE_RULES
 $(BUILD)/core_modules/$(1).out: $(BUILD)/core_modules/$(1)_entry.o $(BUILD)/core_modules/support.o $$($(2)_CORE_LIB) $$($(2)_CORE_SUPPORT_LIBS) $(LIBRETRO_COMMON_LIB) $(LIBUNIFROG) linker/core-module.ld linker/hc15xx/peripherals.ld $(SDK_BUILD_STAMP) $(BUILD_CONFIG_STAMP) | $(OUT)
 	$(LOG_ECHO) "  LD      $$@"
-	$(Q)$(LD) $(CORE_MODULE_LDFLAGS) -o $$@ -Map $$@.map -u unifrog_core_module_entry --start-group $$(filter %.o %.a,$$^) $(CORE_MODULE_LDLIBS) --end-group
+	$(Q)$(LD) $(CORE_MODULE_LDFLAGS) -o $$@ -Map $$@.map -u unifrog_core_module_entry --start-group $$(filter-out $$($(2)_CORE_LIB),$$(filter %.o %.a,$$^)) $$(if $$($(2)_CORE_WHOLE_ARCHIVE),--whole-archive $$($(2)_CORE_LIB) --no-whole-archive,$$($(2)_CORE_LIB)) $(CORE_MODULE_LDLIBS) --end-group
 
 $(3): $(BUILD)/core_modules/$(1).out | $(CORE_PACKAGE)
 	$(LOG_ECHO) "  OBJCOPY $$@"
