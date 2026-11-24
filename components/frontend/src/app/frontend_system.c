@@ -270,7 +270,7 @@ static void frontend_cycle_battery_point(struct frontend_state *fe,
 static void frontend_cycle_battery_rate(struct frontend_state *fe,
    unsigned selected)
 {
-   static const unsigned rates[] = { 0u, 60u, 90u, 120u, 180u, 240u, 360u };
+   static const unsigned rates[] = { 0u, 60u, 90u, 120u, 180u, 240u, 280u, 360u };
    unsigned index = 0;
 
    for (unsigned i = 0; i < ARRAY_SIZE(rates); i++) {
@@ -282,6 +282,10 @@ static void frontend_cycle_battery_rate(struct frontend_state *fe,
    fe->battery_calibration.discharge_mv_per_hour =
       rates[(index + 1u) % ARRAY_SIZE(rates)];
    unifrog_battery_set_calibration(&fe->battery_calibration);
+   fe->battery.discharge_mv_per_hour =
+      fe->battery_calibration.discharge_mv_per_hour;
+   fe->battery.sample_ms = 0;
+   fe->battery.sample_millivolts = 0;
    save_settings(fe);
    frontend_show_power(fe);
    restore_view_selection(fe, selected, fe->scroll);

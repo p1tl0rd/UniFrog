@@ -40,6 +40,12 @@ static void normalize_battery_calibration(struct frontend_state *fe)
    if (!unifrog_battery_calibration_valid(&fe->battery_calibration))
       unifrog_battery_calibration_defaults(&fe->battery_calibration);
    unifrog_battery_set_calibration(&fe->battery_calibration);
+   fe->battery.discharge_mv_per_hour =
+      fe->battery_calibration.discharge_mv_per_hour;
+   if (fe->battery.available != 1) {
+      fe->battery.sample_ms = 0;
+      fe->battery.sample_millivolts = 0;
+   }
 }
 
 static int apply_named_storage_profile(const char *profile, char *detail,

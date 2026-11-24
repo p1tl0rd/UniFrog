@@ -35,8 +35,17 @@ static int read_complete_line(FILE *file, char *line, size_t size,
       return 1;
    while (fgetc(file) != '\n' && !feof(file))
       ;
-   if (errors)
-      (*errors)++;
+   {
+      const char *p = line;
+
+      if ((unsigned char)p[0] == 0xefu && (unsigned char)p[1] == 0xbbu &&
+          (unsigned char)p[2] == 0xbfu)
+         p += 3;
+      while (*p == ' ' || *p == '\t')
+         p++;
+      if (*p != '#' && *p != ';' && errors)
+         (*errors)++;
+   }
    line[0] = '\0';
    return 1;
 }

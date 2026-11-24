@@ -64,6 +64,47 @@ static void test_parser(const char *path)
    TEST_EQ_STR("core.gambatte", parsed.section[2]);
    TEST_EQ_STR("2", parsed.value[2]);
    TEST_EQ_STR("Game Boy; Color", parsed.value[3]);
+
+   /* Long comment lines (> CONFIG_LINE_MAX) must not trigger parse errors,
+    * while overflowing non-comment lines must still be reported as errors. */
+   {
+      char long_comment[560];
+      char long_kv[560];
+      FILE *file = fopen(path, "wb");
+
+      TEST_CHECK(file != NULL);
+      if (file) {
+         memset(long_comment, 'c', 520);
+         long_comment[0] = '#';
+         long_comment[1] = ' ';
+         long_comment[520] = '\0';
+         fprintf(file, "%s\nafter_comment=ok\n", long_comment);
+         fclose(file);
+      }
+      memset(&parsed, 0, sizeof(parsed));
+      errors = 0;
+      TEST_EQ_INT(0, unifrog_config_read(path, collect_entry, &parsed, &errors));
+      TEST_EQ_INT(0, errors);
+      TEST_EQ_INT(1, parsed.count);
+      TEST_EQ_STR("after_comment", parsed.key[0]);
+      TEST_EQ_STR("ok", parsed.value[0]);
+
+      file = fopen(path, "wb");
+      TEST_CHECK(file != NULL);
+      if (file) {
+         memset(long_kv, 'x', 520);
+         memcpy(long_kv, "too_long=", 9);
+         long_kv[520] = '\0';
+         fprintf(file, "%s\nafter_error=1\n", long_kv);
+         fclose(file);
+      }
+      memset(&parsed, 0, sizeof(parsed));
+      errors = 0;
+      TEST_EQ_INT(0, unifrog_config_read(path, collect_entry, &parsed, &errors));
+      TEST_EQ_INT(1, errors);
+      TEST_EQ_INT(1, parsed.count);
+      TEST_EQ_STR("after_error", parsed.key[0]);
+   }
 }
 
 static void test_scoped_precedence(const char *path)

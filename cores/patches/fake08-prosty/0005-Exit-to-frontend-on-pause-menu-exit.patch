@@ -1,0 +1,80 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: UniFrog CI <ci@unifrog.local>
+Date: Tue, 24 Nov 2026 20:48:52 +0700
+Subject: [PATCH 5/5] Exit to frontend on pause menu exit
+
+---
+ platform/libretro/libretro.cpp | 14 ++++++++++++++
+ source/picoluaapi.cpp          |  8 ++++++++
+ 2 files changed, 22 insertions(+)
+
+diff --git a/platform/libretro/libretro.cpp b/platform/libretro/libretro.cpp
+index d566f5a3a5bba0ac0ed88d29cd3d98f11fe4daeb..feff8656a5473cd07f139eb7682e98e6ff69f7ba 100644
+--- a/platform/libretro/libretro.cpp
++++ b/platform/libretro/libretro.cpp
+@@ -27,6 +27,15 @@ static retro_environment_t enviro_cb;
+ static retro_input_poll_t input_poll_cb;
+ static retro_input_state_t input_state_cb;
+ static retro_log_printf_t log_cb;
++static bool libretro_shutdown_requested = false;
++
++extern "C" void fake08_libretro_request_shutdown(void)
++{
++    libretro_shutdown_requested = true;
++    if (enviro_cb) {
++        enviro_cb(RETRO_ENVIRONMENT_SHUTDOWN, NULL);
++    }
++}
+ 
+ 
+ 
+@@ -506,6 +515,7 @@ EXPORT void retro_set_input_state(retro_input_state_t cb) { input_state_cb = cb;
+ 
+ EXPORT void retro_init()
+ {
++    libretro_shutdown_requested = false;
+     retro_log_callback log;
+ 	if (enviro_cb(RETRO_ENVIRONMENT_GET_LOG_INTERFACE, &log))
+ 	{
+@@ -734,6 +744,9 @@ EXPORT void retro_run()
+         if (!splash_screen_active) {
+             _vm->UpdateAndDraw();
+         }
++        if (libretro_shutdown_requested) {
++            return;
++        }
+         kHeld = currKHeld;
+         kDown = currKDown;
+ 
+@@ -1181,6 +1194,7 @@ EXPORT void retro_cheat_set(unsigned index, bool enabled, const char *code)
+ 
+ EXPORT bool retro_load_game(struct retro_game_info const *info)
+ {
++    libretro_shutdown_requested = false;
+     check_variables(true);
+ 
+     // Disable blocking splash screen on SF2000
+diff --git a/source/picoluaapi.cpp b/source/picoluaapi.cpp
+index a7204812c40caba7a00b6ca4f3ffc296a11d44f5..082301e28735af30163d18df1f040255326d5b67 100644
+--- a/source/picoluaapi.cpp
++++ b/source/picoluaapi.cpp
+@@ -1320,8 +1320,16 @@ int getbioserror(lua_State *L) {
+     return 1;
+ }
+ 
++#ifdef SF2000
++extern "C" void fake08_libretro_request_shutdown(void);
++#endif
++
+ int loadbioscart(lua_State *L) {
++#ifdef SF2000
++    fake08_libretro_request_shutdown();
++#else
+     _vmForLuaApi->QueueCartChange("__FAKE08-BIOS.p8");
++#endif
+ 
+     return 0;
+ }
+-- 
+2.43.0
+

@@ -43,7 +43,11 @@ static void battery_direct_adc_init(void)
    REG32_SET_FIELD2(ADC_CTRL1, 0, 1, 1);
    REG32_SET_FIELD2(ADC_CTRL1, 8, 8, 0xff);
    REG32_SET_FIELD2(ADC_CTRL1, 0, 1, 1);
-   usleep(1000);
+   for (unsigned attempt = 0; attempt < 25u; attempt++) {
+      usleep(2000);
+      if (REG32_GET_FIELD2(ADC_CTRL0, 16, 8) != 0)
+         break;
+   }
 
    battery_direct_initialized = 1;
    unifrog_log("unifrog battery direct_adc init ctrl0=0x%08lx ctrl1=0x%08lx ctrl2=0x%08lx ctrl3=0x%08lx\n",
@@ -107,6 +111,18 @@ int unifrog_battery_update(struct unifrog_battery_status *status, int force_log)
       status->low_confirm_samples = 0;
       status->normal_confirm_samples = 0;
       copy_source(status->source, sizeof(status->source), "?");
+      return -1;
+   }
+   if (raw == 0) {
+      if (status->available != 1) {
+         status->available = 0;
+         copy_source(status->source, sizeof(status->source), source);
+      }
+      if (force_log) {
+         UF_LOG_INFO("battery",
+            "sample_ignored source=%s raw=0 ctrl0=0x%08lx",
+            source, (unsigned long)REG32_READ(ADC_CTRL0));
+      }
       return -1;
    }
 

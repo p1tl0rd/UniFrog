@@ -119,6 +119,26 @@ static void test_battery_calibration(void)
    TEST_EQ_INT(0, unifrog_battery_status_apply_sample(&status, 190, 3800,
       "test", 300001));
    TEST_CHECK(status.discharge_mv_per_hour > 0);
+
+   /* Verify 0..4 bar thresholds across empty/low/mid/high/full bands. */
+   TEST_EQ_INT(0, unifrog_battery_bars_for_raw(175)); /* 3500 mV -> 0% */
+   TEST_EQ_INT(1, unifrog_battery_bars_for_raw(181)); /* 3620 mV -> 19% */
+   TEST_EQ_INT(1, unifrog_battery_bars_for_raw(183)); /* 3660 mV -> 25% */
+   TEST_EQ_INT(2, unifrog_battery_bars_for_raw(184)); /* 3680 mV -> 33% */
+   TEST_EQ_INT(2, unifrog_battery_bars_for_raw(186)); /* 3720 mV -> 50% */
+   TEST_EQ_INT(3, unifrog_battery_bars_for_raw(188)); /* 3760 mV -> 63% */
+   TEST_EQ_INT(3, unifrog_battery_bars_for_raw(190)); /* 3800 mV -> 75% */
+   TEST_EQ_INT(4, unifrog_battery_bars_for_raw(192)); /* 3840 mV -> 80% */
+   TEST_EQ_INT(4, unifrog_battery_bars_for_raw(200)); /* 4000 mV -> 100% */
+
+   calibration.discharge_mv_per_hour = 280u;
+   unifrog_battery_set_calibration(&calibration);
+   unifrog_battery_status_init(&status);
+   TEST_EQ_INT(280, (int)status.discharge_mv_per_hour);
+   TEST_EQ_INT(1, unifrog_battery_status_apply_sample(&status, 189, 3780,
+      "test", 1000));
+   TEST_EQ_INT(60, (int)status.estimated_minutes);
+   TEST_EQ_INT(3, (int)status.bars);
 }
 
 static void test_log_policy(void)

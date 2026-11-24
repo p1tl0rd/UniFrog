@@ -87,11 +87,20 @@ unsigned unifrog_battery_percent_for_mv(unsigned millivolts)
    return 100;
 }
 
+static unsigned battery_bars_for_percent(unsigned percent)
+{
+   if (percent == 0u)
+      return 0u;
+   if (percent >= 100u)
+      return 4u;
+   return (percent + 24u) / 25u;
+}
+
 unsigned unifrog_battery_bars_for_raw(unsigned raw)
 {
    unsigned percent = unifrog_battery_percent_for_mv(raw * 20u);
 
-   return percent >= 100u ? 4u : percent / 25u;
+   return battery_bars_for_percent(percent);
 }
 
 static void battery_update_rate(struct unifrog_battery_status *status,
@@ -99,7 +108,7 @@ static void battery_update_rate(struct unifrog_battery_status *status,
 {
    uint32_t elapsed;
 
-   if (!status->sample_ms) {
+   if (!status->sample_ms || !status->sample_millivolts) {
       status->sample_ms = now_ms ? now_ms : 1u;
       status->sample_millivolts = millivolts;
       return;
@@ -139,7 +148,7 @@ int unifrog_battery_status_apply_sample(struct unifrog_battery_status *status,
    if (!status)
       return -1;
    percent = unifrog_battery_percent_for_mv(millivolts);
-   bars = percent >= 100u ? 4u : percent / 25u;
+   bars = battery_bars_for_percent(percent);
    sample_low = millivolts <= active_calibration.millivolts[1];
    if (status->low) {
       if (millivolts < active_calibration.millivolts[1] +
