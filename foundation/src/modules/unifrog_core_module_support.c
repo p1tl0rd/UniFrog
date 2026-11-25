@@ -1442,13 +1442,14 @@ int sprintf(char *str, const char *format, ...)
 
 int vfprintf(FILE *stream, const char *format, va_list ap)
 {
+   FILE *volatile checked_stream = stream;
    const struct unifrog_abi *abi = module_abi();
 
-   if (!stream)
+   if (!checked_stream)
       return vprintf(format, ap);
    if (!abi || !abi->vfprintf)
       return -1;
-   return abi->vfprintf(stream, format, ap);
+   return abi->vfprintf(checked_stream, format, ap);
 }
 
 int fprintf(FILE *stream, const char *format, ...)
@@ -1486,16 +1487,21 @@ int printf(const char *format, ...)
 
 int puts(const char *s)
 {
+   const char *volatile checked_s = s;
+   const char *safe_s = checked_s;
    const struct unifrog_abi *abi = module_abi();
 
    if (abi && abi->log_message)
-      abi->log_message(s ? s : "");
-   return s ? (int)strlen(s) : 0;
+      abi->log_message(safe_s ? safe_s : "");
+   return safe_s ? (int)strlen(safe_s) : 0;
 }
 
 int fputs(const char *s, FILE *stream)
 {
-   return fprintf(stream, "%s", s ? s : "");
+   const char *volatile checked_s = s;
+   const char *safe_s = checked_s;
+
+   return fprintf(stream, "%s", safe_s ? safe_s : "");
 }
 
 int putchar(int c)

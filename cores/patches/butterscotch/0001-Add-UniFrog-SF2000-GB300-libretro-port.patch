@@ -5,16 +5,17 @@ Subject: [PATCH] Add UniFrog SF2000/GB300 libretro port
 
 ---
  Makefile.unifrog              |  90 +++++++++++++++++++++
- src/backends/libretro.c       |  22 +++++-
+ src/backends/libretro.c       |  23 +++++-
  src/data_win.c                |  18 ++++-
  src/gettime.c                 |   5 ++
- src/loop.c                    |  39 ++++++++-
+ src/loop.c                    |  42 +++++++++-
  src/overlay_file_system.c     |  10 ++-
+ src/runner.c                  |   4 +-
  src/sf2000/sf2000_audio.c     |  10 +++
  src/sf2000/sf2000_audio.h     |   2 +
  src/sf3000/main.c             | 144 ++++++++++++++++++++++++++--------
  src/sw_renderer/sw_renderer.c |   4 +-
- 10 files changed, 298 insertions(+), 46 deletions(-)
+ 11 files changed, 305 insertions(+), 47 deletions(-)
  create mode 100644 Makefile.unifrog
 
 diff --git a/Makefile.unifrog b/Makefile.unifrog
@@ -114,7 +115,7 @@ index 0000000000000000000000000000000000000000..e92cadb3273cb672195f0be8af2bae54
 +
 +.PHONY: all clean
 diff --git a/src/backends/libretro.c b/src/backends/libretro.c
-index 9eb49a7b67811e7c07bc98be1ae7d5d631124f26..f08b9ac43b340a08c59a1042819f3da502a180c5 100644
+index 9eb49a7b67811e7c07bc98be1ae7d5d631124f26..53463033d664e9af0e231e3b96bb442697e6acfb 100644
 --- a/src/backends/libretro.c
 +++ b/src/backends/libretro.c
 @@ -11,6 +11,9 @@
@@ -158,17 +159,18 @@ index 9eb49a7b67811e7c07bc98be1ae7d5d631124f26..f08b9ac43b340a08c59a1042819f3da5
      bool menu = libretro_input(RETRO_DEVICE_ID_JOYPAD_X) || libretro_input(RETRO_DEVICE_ID_JOYPAD_SELECT);
      const int keys[] = {VK_UP, VK_DOWN, VK_LEFT, VK_RIGHT, 'Z', VK_ENTER, VK_SPACE, 'X', VK_SHIFT, 'C', VK_CONTROL};
      const bool down_now[] = {up, down, left, right, confirm, confirm, confirm, cancel, cancel, menu, menu};
-@@ -71,5 +80,10 @@ void platformSetWindowTitle(const char *title) { (void)title; }
+@@ -71,5 +80,11 @@ void platformSetWindowTitle(const char *title) { (void)title; }
  void platformSleepUntil(uint64_t time) { (void)time; libretro_yield_frame(); }
  
  void platformLog(const logType type, const char *format, va_list args) {
 -    (void)type; vfprintf(stderr, format, args);
 +#ifdef PLATFORM_UNIFROG
 +    if (type != LOG_TYPE_ERROR && type != LOG_TYPE_WARNING) return;
++    vprintf(format, args);
 +#else
 +    (void)type;
-+#endif
 +    vfprintf(stderr, format, args);
++#endif
  }
 diff --git a/src/data_win.c b/src/data_win.c
 index 5c609c9aba1fad65f110debb8f4db90376ad3df3..3d707d29e92c30c67427e1d58559cb9b0da07dd1 100644
@@ -239,7 +241,7 @@ index 15365b05da5413c42a2f0a8317ee05e72e1785b1..98e3959b5132179ef922a142f49a10a6
      struct timespec ts;
      clock_gettime(CLOCK_MONOTONIC, &ts);
 diff --git a/src/loop.c b/src/loop.c
-index 2a1accb23d93b9e9b8965be7f67e502a44f73911..bef5e756dabf4976cb0c88083bf0570eefe8a054 100644
+index 2a1accb23d93b9e9b8965be7f67e502a44f73911..ab6877e8f4f6d1e1e919326161d73318c6e6d213 100644
 --- a/src/loop.c
 +++ b/src/loop.c
 @@ -78,6 +78,11 @@
@@ -338,7 +340,17 @@ index 2a1accb23d93b9e9b8965be7f67e502a44f73911..bef5e756dabf4976cb0c88083bf0570e
  #endif
              renderer = SWRenderer_create();
  #ifdef PLATFORM_SF2000
-@@ -1090,8 +1119,14 @@ int loop(CommandLineArgs args, const char *argv0) {
+@@ -1016,6 +1045,9 @@ int loop(CommandLineArgs args, const char *argv0) {
+         }
+ 
+         // Initialize the runner
++#ifdef PLATFORM_UNIFROG
++        unifrog_core_load_progress("RUNNER", 86, 100);
++#endif
+         Runner* runner = Runner_create(dataWin, vm, renderer, (FileSystem*) overlayFs, audioSystem, args.seed);
+ 
+         if (!args.lazyTextures) {
+@@ -1090,8 +1122,14 @@ int loop(CommandLineArgs args, const char *argv0) {
          // Initialize the first room and fire Game Start / Room Start events
  #ifdef PLATFORM_SF2000
          hacker_loader_log("ROOM", "LOADING FIRST ROOM...", 95);
@@ -397,6 +409,21 @@ index e61777e76331e4ffbe0ded72a3d5b7e26762c718..d465d2725620ca402ea69ba6cab035fb
          if (h->fullPath != nullptr) {
              fs_sync(h->fullPath);
          }
+diff --git a/src/runner.c b/src/runner.c
+index c2c2ee0a498be5f0e0f4bf767da688dc7ea2e75a..ddebca5dc65c7a504b4a381088d8ff3b3aae8c47 100644
+--- a/src/runner.c
++++ b/src/runner.c
+@@ -2380,7 +2380,9 @@ static void flattenCollisionEvents(Runner* runner) {
+             depth++;
+         }
+ 
+-        qsort(dst->events, dst->eventCount, sizeof(FlattenedCollisionEvent), compareTargetObjectIndexAscending);
++        if (dst->eventCount > 1) {
++            qsort(dst->events, dst->eventCount, sizeof(FlattenedCollisionEvent), compareTargetObjectIndexAscending);
++        }
+     }
+ }
+ 
 diff --git a/src/sf2000/sf2000_audio.c b/src/sf2000/sf2000_audio.c
 index 756f9c0f7a645d7821c9175913dfc60560920bca..9ef438a9d7158c46c37600c86929e3771a42ae50 100644
 --- a/src/sf2000/sf2000_audio.c
