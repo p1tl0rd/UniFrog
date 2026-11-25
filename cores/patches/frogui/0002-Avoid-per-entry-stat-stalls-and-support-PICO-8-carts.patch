@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: UniFrog Builder <unifrog@local>
 Date: Tue, 24 Nov 2026 13:41:56 +0700
-Subject: [PATCH 2/3] Avoid per-entry stat() stalls and support PICO-8 carts in
+Subject: [PATCH 2/4] Avoid per-entry stat() stalls and support PICO-8 carts in
  FrogUI
 
 ---

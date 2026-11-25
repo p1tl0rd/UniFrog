@@ -51,7 +51,8 @@ CORE_SPECS := \
 	'fceumm-prosty|$(CORE_SOURCE_ROOT)/libretro-fceumm-prosty|https://github.com/tzubertowski/libretro-fceumm.git|head|e6111e684e7a7761f3f1d6c80d0a825e2c8cdc7e|e6111e684e7a7761f3f1d6c80d0a825e2c8cdc7e|-|.' \
 	'prboom|$(CORE_SOURCE_ROOT)/libretro-prboom|https://github.com/madcock/libretro-prboom.git|head|288f89dbb5912c5a920b2e3d392a85a8061fc817|288f89dbb5912c5a920b2e3d392a85a8061fc817|patches/prboom|.' \
 	'nxengine|$(CORE_SOURCE_ROOT)/libretro-nxengine|https://github.com/madcock/libretro-nxengine.git|head|34366d14cc8d143df814fc6e6373b4d688ccc9b3|34366d14cc8d143df814fc6e6373b4d688ccc9b3|patches/nxengine|.' \
-	'ecwolf|$(CORE_SOURCE_ROOT)/ecwolf|https://github.com/madcock/ecwolf.git|head|e40256b067fe9de686b9abfba082ed8e0e309f01|e40256b067fe9de686b9abfba082ed8e0e309f01|-|.'
+	'ecwolf|$(CORE_SOURCE_ROOT)/ecwolf|https://github.com/madcock/ecwolf.git|head|e40256b067fe9de686b9abfba082ed8e0e309f01|e40256b067fe9de686b9abfba082ed8e0e309f01|-|.' \
+	'butterscotch|$(CORE_SOURCE_ROOT)/butterscotch|https://github.com/tzubertowski/TreeFrogUI_FroggyTale.git|head|c43543e76391396cf2ef40a62b219d6717a24521|c43543e76391396cf2ef40a62b219d6717a24521|patches/butterscotch|.'
 
 # Patch queues for source repositories pinned as submodules by a core fork.
 # parent-core|submodule-path|pinned-commit|patch-dir
@@ -93,7 +94,8 @@ CORE_PACKAGE_SPECS := \
 	fceumm-prosty:FCEUMM_PROSTY:fceumm-prosty:fceumm-prosty:fceumm_prosty:nes\|fds:fceumm_prosty:- \
 	prboom:PRBOOM:prboom:prboom:prboom:wad\|iwad\|pwad\|lmp:prboom:- \
 	nxengine:NXENGINE:nxengine:nxengine:nxengine:exe:nxengine:- \
-	ecwolf:ECWOLF:ecwolf:ecwolf:ecwolf:wl6\|wl1\|sod\|sdm\|n3d\|pk3:ecwolf:-
+	ecwolf:ECWOLF:ecwolf:ecwolf:ecwolf:wl6\|wl1\|sod\|sdm\|n3d\|pk3:ecwolf:- \
+	butterscotch:BUTTERSCOTCH:butterscotch:butterscotch:butterscotch:unx\|win\|butterscotch:butterscotch:-
 
 # License material copied verbatim beside packaged core modules. Keep the
 # destination names stable so SD artifacts remain auditable without fetching
@@ -132,14 +134,15 @@ CORE_LICENSE_SPECS := \
 	fceumm-prosty|$(CORE_SOURCE_ROOT)/libretro-fceumm-prosty/Copying|fceumm-prosty-COPYING \
 	prboom|$(CORE_SOURCE_ROOT)/libretro-prboom/COPYING|prboom-COPYING \
 	nxengine|$(CORE_SOURCE_ROOT)/libretro-nxengine/nxengine/LICENSE|nxengine-LICENSE \
-	ecwolf|$(CORE_SOURCE_ROOT)/ecwolf/docs/license-gpl.txt|ecwolf-LICENSE
+	ecwolf|$(CORE_SOURCE_ROOT)/ecwolf/docs/license-gpl.txt|ecwolf-LICENSE \
+	butterscotch|$(CORE_SOURCE_ROOT)/butterscotch/LICENSE|butterscotch-LICENSE
 
 DEFAULT_CORE_IDS := gambatte gpsp gpsp-gbac-prosty picodrive snes9x2005 \
 	snes9x2002 quicknes fceumm gearboy pce-fast qpsx frogui \
 	mame2000 fbalpha2012 stella2014 a5200 prosystem atari800lib handy race \
 	beetle-cygne gearcoleco snes9x2005-prosty snes9x2002-prosty \
 	gambatte-prosty quicknes-prosty frodo-prosty fake08-prosty \
-	bluemsx-prosty fceumm-prosty prboom nxengine ecwolf
+	bluemsx-prosty fceumm-prosty prboom nxengine ecwolf butterscotch
 
 # Clean rebuilds of these cores cost far more than the rest combined
 # (benchmarked with a warm ccache, -j9: fbalpha2012 and mame2000 run for

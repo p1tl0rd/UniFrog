@@ -1,0 +1,596 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: UniFrog Builder <unifrog@local>
+Date: Wed, 25 Nov 2026 22:53:09 +0700
+Subject: [PATCH] Add UniFrog SF2000/GB300 libretro port
+
+---
+ Makefile.unifrog              |  90 +++++++++++++++++++++
+ src/backends/libretro.c       |  22 +++++-
+ src/gettime.c                 |   5 ++
+ src/loop.c                    |  25 +++++-
+ src/overlay_file_system.c     |  10 ++-
+ src/sf2000/sf2000_audio.c     |  10 +++
+ src/sf2000/sf2000_audio.h     |   2 +
+ src/sf3000/main.c             | 144 ++++++++++++++++++++++++++--------
+ src/sw_renderer/sw_renderer.c |   4 +-
+ 9 files changed, 268 insertions(+), 44 deletions(-)
+ create mode 100644 Makefile.unifrog
+
+diff --git a/Makefile.unifrog b/Makefile.unifrog
+new file mode 100644
+index 0000000000000000000000000000000000000000..e92cadb3273cb672195f0be8af2bae544fbd53e1
+--- /dev/null
++++ b/Makefile.unifrog
+@@ -0,0 +1,90 @@
++# Butterscotch -> UniFrog (GB300V2 / SF2000) static library build
++
++TARGET := butterscotch_libretro_sf2000.a
++OBJDIR := build/unifrog
++
++CC ?= mipsel-mti-elf-gcc
++AR ?= mipsel-mti-elf-ar
++LIBRETRO_COMMON_INC ?= ../libretro-common/include
++
++CFLAGS := -EL -march=mips32 -mtune=mips32r2 -msoft-float
++CFLAGS += -G0 -mno-abicalls -fno-pic
++CFLAGS += -ffunction-sections -fdata-sections
++CFLAGS += -fno-strict-aliasing -fomit-frame-pointer -O2 -DNDEBUG
++
++INCLUDES := \
++	-I. \
++	-Isrc \
++	-Isrc/image \
++	-Isrc/video \
++	-Isrc/audio \
++	-Isrc/debug_font \
++	-Isrc/sf2000 \
++	-Isrc/sw_renderer \
++	-Ivendor/stb/ds \
++	-Ivendor/stb/image \
++	-Ivendor/stb/vorbis \
++	-Ivendor/bzip2 \
++	-Ivendor/md5 \
++	-Ivendor/miniz \
++	-Ivendor/sha1 \
++	-Ivendor/base64 \
++	-I$(LIBRETRO_COMMON_INC)
++
++DEFINES := \
++	-DSF2000 \
++	-DPLATFORM_SF3000 \
++	-DPLATFORM_UNIFROG \
++	-DENABLE_SW_RENDERER \
++	-DENABLE_WAD16 \
++	-DDISABLE_WAD14 \
++	-DDISABLE_WAD17 \
++	-DBUTTERSCOTCH_VIDEO_NULL=1 \
++	-DNO_THREADS \
++	-DUSE_SDL2=0 \
++	-DMINIZ_NO_ARCHIVE_APIS \
++	-DMINIZ_NO_STDIO \
++	-DDISABLE_VM_GML_PROFILER \
++	-DDISABLE_VM_OPCODE_PROFILER \
++	-DDISABLE_VM_STUB_LOGS \
++	-DDISABLE_VM_TRACING \
++	-DDISABLE_SPATIAL_GRID_LOGS \
++	-DDISABLE_VM_EXCEPTIONS_LOGS \
++	-DBUTTERSCOTCH_COMMIT_DATE=\"unifrog\" \
++	-DBUTTERSCOTCH_COMMIT_HASH=\"c43543e\"
++
++SRCS := \
++	$(filter-out src/embedded/%.c,$(wildcard src/*.c)) \
++	$(wildcard src/image/*.c) \
++	$(wildcard src/debug_font/*.c) \
++	$(wildcard src/sw_renderer/*.c) \
++	src/physics/physics.c \
++	src/physics/disabled/physics_disabled.c \
++	src/video/null_video.c \
++	src/sf3000/main.c \
++	src/backends/libretro.c \
++	src/sf2000/sf2000_audio.c \
++	src/sf2000/stb_impl.c \
++	vendor/stb/vorbis/stb_vorbis.c \
++	$(wildcard vendor/bzip2/*.c) \
++	$(wildcard vendor/miniz/*.c) \
++	vendor/md5/md5.c \
++	vendor/sha1/sha1.c \
++	vendor/base64/base64.c
++
++OBJS := $(addprefix $(OBJDIR)/,$(SRCS:.c=.o))
++
++all: $(TARGET)
++
++$(TARGET): $(OBJS)
++	@rm -f $@
++	$(AR) rcs $@ $(OBJS)
++
++$(OBJDIR)/%.o: %.c
++	@mkdir -p $(dir $@)
++	$(CC) $(CFLAGS) $(INCLUDES) $(DEFINES) -c -o $@ $<
++
++clean:
++	rm -rf $(OBJDIR) $(TARGET)
++
++.PHONY: all clean
+diff --git a/src/backends/libretro.c b/src/backends/libretro.c
+index 9eb49a7b67811e7c07bc98be1ae7d5d631124f26..f08b9ac43b340a08c59a1042819f3da502a180c5 100644
+--- a/src/backends/libretro.c
++++ b/src/backends/libretro.c
+@@ -11,6 +11,9 @@
+ 
+ extern int16_t libretro_input(unsigned id);
+ extern void libretro_yield_frame(void);
++#ifdef PLATFORM_UNIFROG
++extern bool libretro_should_exit(void);
++#endif
+ static Runner *runner;
+ static bool old_keys[256];
+ 
+@@ -18,7 +21,10 @@ bool platformInit(int32_t w, int32_t h, const char *title, bool headless) {
+     (void)w; (void)h; (void)title; (void)headless;
+     return true;
+ }
+-void platformInitFunctions(Runner *r) { runner = r; }
++void platformInitFunctions(Runner *r) {
++    runner = r;
++    memset(old_keys, 0, sizeof(old_keys));
++}
+ void platformExit(void) { runner = NULL; }
+ void platformSwapBuffers(void) {
+     SwRenderer_present();
+@@ -26,13 +32,16 @@ void platformSwapBuffers(void) {
+ }
+ void *platformGetProcAddress(const char *name) { (void)name; return NULL; }
+ bool platformHandleEvents(void) {
++#ifdef PLATFORM_UNIFROG
++    if (libretro_should_exit()) return true;
++#endif
+     if (!runner) return false;
+     bool up = libretro_input(RETRO_DEVICE_ID_JOYPAD_UP);
+     bool down = libretro_input(RETRO_DEVICE_ID_JOYPAD_DOWN);
+     bool left = libretro_input(RETRO_DEVICE_ID_JOYPAD_LEFT);
+     bool right = libretro_input(RETRO_DEVICE_ID_JOYPAD_RIGHT);
+-    bool confirm = libretro_input(RETRO_DEVICE_ID_JOYPAD_A) || libretro_input(RETRO_DEVICE_ID_JOYPAD_R);
+-    bool cancel = libretro_input(RETRO_DEVICE_ID_JOYPAD_B) || libretro_input(RETRO_DEVICE_ID_JOYPAD_L);
++    bool confirm = libretro_input(RETRO_DEVICE_ID_JOYPAD_A) || libretro_input(RETRO_DEVICE_ID_JOYPAD_R) || libretro_input(RETRO_DEVICE_ID_JOYPAD_START);
++    bool cancel = libretro_input(RETRO_DEVICE_ID_JOYPAD_B) || libretro_input(RETRO_DEVICE_ID_JOYPAD_Y) || libretro_input(RETRO_DEVICE_ID_JOYPAD_L);
+     bool menu = libretro_input(RETRO_DEVICE_ID_JOYPAD_X) || libretro_input(RETRO_DEVICE_ID_JOYPAD_SELECT);
+     const int keys[] = {VK_UP, VK_DOWN, VK_LEFT, VK_RIGHT, 'Z', VK_ENTER, VK_SPACE, 'X', VK_SHIFT, 'C', VK_CONTROL};
+     const bool down_now[] = {up, down, left, right, confirm, confirm, confirm, cancel, cancel, menu, menu};
+@@ -71,5 +80,10 @@ void platformSetWindowTitle(const char *title) { (void)title; }
+ void platformSleepUntil(uint64_t time) { (void)time; libretro_yield_frame(); }
+ 
+ void platformLog(const logType type, const char *format, va_list args) {
+-    (void)type; vfprintf(stderr, format, args);
++#ifdef PLATFORM_UNIFROG
++    if (type != LOG_TYPE_ERROR && type != LOG_TYPE_WARNING) return;
++#else
++    (void)type;
++#endif
++    vfprintf(stderr, format, args);
+ }
+diff --git a/src/gettime.c b/src/gettime.c
+index 15365b05da5413c42a2f0a8317ee05e72e1785b1..98e3959b5132179ef922a142f49a10a665ef80cc 100644
+--- a/src/gettime.c
++++ b/src/gettime.c
+@@ -8,6 +8,9 @@
+ #include <windows.h>
+ #elif defined(__APPLE__)
+ #include <mach/mach_time.h>
++#elif defined(PLATFORM_UNIFROG)
++#include <stdint.h>
++extern uint32_t os_get_tick_count(void);
+ #else
+ #include <time.h>
+ #ifndef CLOCK_MONOTONIC
+@@ -58,6 +61,8 @@ uint64_t nowNanos(void) {
+         mach_time_factor = (double)machinfo.numer / machinfo.denom;
+     }
+     return mach_absolute_time() * mach_time_factor;
++#elif defined(PLATFORM_UNIFROG)
++    return (uint64_t) os_get_tick_count() * 1000000ULL;
+ #elif defined(CLOCK_MONOTONIC)
+     struct timespec ts;
+     clock_gettime(CLOCK_MONOTONIC, &ts);
+diff --git a/src/loop.c b/src/loop.c
+index 2a1accb23d93b9e9b8965be7f67e502a44f73911..2567aa7c4712068f67273b56d474efff26b6aca1 100644
+--- a/src/loop.c
++++ b/src/loop.c
+@@ -78,6 +78,11 @@
+ #include "hacker_loader.h"
+ #endif
+ 
++#ifdef PLATFORM_UNIFROG
++extern void unifrog_core_load_progress(const char *stage, unsigned current, unsigned total);
++extern void libretro_notify_load_ready(void);
++#endif
++
+ enum GraphicsAPI gfx;
+ 
+ #if defined(ENABLE_LEGACY_GL) || defined(ENABLE_MODERN_GL)
+@@ -439,6 +444,7 @@ static void saveRecordingOnCrash(void) {
+     }
+ }
+ 
++#if !defined(PLATFORM_UNIFROG)
+ static void crashSignalHandler(int sig) {
+     saveRecordingOnCrash();
+     signal(sig, SIG_DFL);
+@@ -457,6 +463,9 @@ static void installCrashHandlers(void) {
+     signal(SIGFPE,  crashSignalHandler);
+     signal(SIGILL,  crashSignalHandler);
+ }
++#else
++static void installCrashHandlers(void) {}
++#endif
+ 
+ #endif
+ 
+@@ -474,7 +483,7 @@ void saveInputRecording() {
+ /* PLATFORM_SF2000 joins the opt-out list: the GB300/SF2000 firmware installs its own
+  * exception handler (patched to a blue screen of death by the multicore loader) and
+  * this newlib has no sigaction, so the desktop ASAN/crash passthrough cannot build. */
+-#if !defined(_WIN32) && !defined(PLATFORM_VITA) && !defined(__SWITCH__) && !defined(__wasi__) && !defined(PLATFORM_SF2000)
++#if !defined(_WIN32) && !defined(PLATFORM_VITA) && !defined(__SWITCH__) && !defined(__wasi__) && !defined(PLATFORM_SF2000) && !defined(PLATFORM_UNIFROG)
+ #define USE_CRASH_SIGNAL_HANDLER
+ typedef struct { int key; struct sigaction value; } PreviousSignalActionEntry;
+ static PreviousSignalActionEntry* previousSignalActions = nullptr;
+@@ -606,7 +615,7 @@ int loop(CommandLineArgs args, const char *argv0) {
+             options.parseTxtr = false;
+         } while(0);
+ #endif
+-#if defined(USE_MINIAUDIO) || defined(USE_OPENAL) || defined(PLATFORM_SF2000)
++#if defined(USE_MINIAUDIO) || defined(USE_OPENAL) || defined(PLATFORM_SF2000) || defined(PLATFORM_SF3000) || defined(PLATFORM_UNIFROG)
+         if (!args.headless)
+             options.parseAudo = true;
+ #endif
+@@ -619,6 +628,9 @@ int loop(CommandLineArgs args, const char *argv0) {
+ #ifdef PLATFORM_SF2000
+         options.progressCallback = sf2000_progress_callback;
+         hacker_loader_log("WAD", "PARSING WAD CHUNKS...", 32);
++#endif
++#ifdef PLATFORM_UNIFROG
++        unifrog_core_load_progress("WAD", 25, 100);
+ #endif
+         DataWin* dataWin = DataWin_parse(currentDataWinPath, options);
+ #ifdef PLATFORM_SF2000
+@@ -929,6 +941,9 @@ int loop(CommandLineArgs args, const char *argv0) {
+         if (gfx == SOFTWARE) {
+ #ifdef PLATFORM_SF2000
+             hacker_loader_log("ATLS", "INIT SPRITE ATLAS...", 70);
++#endif
++#ifdef PLATFORM_UNIFROG
++            unifrog_core_load_progress("ATLAS", 65, 100);
+ #endif
+             renderer = SWRenderer_create();
+ #ifdef PLATFORM_SF2000
+@@ -1090,8 +1105,14 @@ int loop(CommandLineArgs args, const char *argv0) {
+         // Initialize the first room and fire Game Start / Room Start events
+ #ifdef PLATFORM_SF2000
+         hacker_loader_log("ROOM", "LOADING FIRST ROOM...", 95);
++#endif
++#ifdef PLATFORM_UNIFROG
++        unifrog_core_load_progress("ROOM", 90, 100);
+ #endif
+         Runner_initFirstRoom(runner);
++#ifdef PLATFORM_UNIFROG
++        libretro_notify_load_ready();
++#endif
+ 
+         // Main loop
+         bool debugShowCollisionMasks = false;
+diff --git a/src/overlay_file_system.c b/src/overlay_file_system.c
+index e61777e76331e4ffbe0ded72a3d5b7e26762c718..d465d2725620ca402ea69ba6cab035fb18163069 100644
+--- a/src/overlay_file_system.c
++++ b/src/overlay_file_system.c
+@@ -160,9 +160,11 @@ static char* overlayReadFileText(FileSystem* fs, const char* relativePath) {
+     return content;
+ }
+ 
+-#ifdef PLATFORM_SF2000
++#if defined(PLATFORM_SF2000)
+ #include "sf2000/sf2000_fw.h"
+ extern int fs_sync(const char *path);
++#elif defined(PLATFORM_UNIFROG)
++extern int fs_sync(const char *path);
+ #endif
+ 
+ static bool overlayWriteFileText(FileSystem* fs, const char* relativePath, const char* contents) {
+@@ -178,7 +180,7 @@ static bool overlayWriteFileText(FileSystem* fs, const char* relativePath, const
+     size_t written = fwrite(contents, 1, len, f);
+     fflush(f);
+     fclose(f);
+-#ifdef PLATFORM_SF2000
++#if defined(PLATFORM_SF2000) || defined(PLATFORM_UNIFROG)
+     fs_sync(fullPath);
+ #endif
+     free(fullPath);
+@@ -232,7 +234,7 @@ static bool overlayWriteFileBinary(FileSystem* fs, const char* relativePath, con
+     size_t written = fwrite(data, 1, (size_t) size, f);
+     fflush(f);
+     fclose(f);
+-#ifdef PLATFORM_SF2000
++#if defined(PLATFORM_SF2000) || defined(PLATFORM_UNIFROG)
+     fs_sync(fullPath);
+ #endif
+     free(fullPath);
+@@ -287,7 +289,7 @@ static void overlayBinaryClose(MAYBE_UNUSED FileSystem* fs, void* handle) {
+     if (h->fp != nullptr) {
+         fflush(h->fp);
+         fclose(h->fp);
+-#ifdef PLATFORM_SF2000
++#if defined(PLATFORM_SF2000) || defined(PLATFORM_UNIFROG)
+         if (h->fullPath != nullptr) {
+             fs_sync(h->fullPath);
+         }
+diff --git a/src/sf2000/sf2000_audio.c b/src/sf2000/sf2000_audio.c
+index 756f9c0f7a645d7821c9175913dfc60560920bca..9ef438a9d7158c46c37600c86929e3771a42ae50 100644
+--- a/src/sf2000/sf2000_audio.c
++++ b/src/sf2000/sf2000_audio.c
+@@ -152,6 +152,15 @@ struct Sf2000AudioSystem {
+ 
+ static Sf2000AudioSystem* s_audio = NULL;
+ static uint32_t s_sample_phase;
++#ifdef PLATFORM_UNIFROG
++static bool s_bgmEnabled = false;
++#else
++static bool s_bgmEnabled = true;
++#endif
++
++void Sf2000AudioSystem_setBgmEnabled(bool enabled) {
++    s_bgmEnabled = enabled;
++}
+ 
+ /* External callback to libretro frontend in main.c */
+ extern void sf2000_send_audio(const int16_t *samples, unsigned frames);
+@@ -188,6 +197,7 @@ static void sf2000AudioUpdate(AudioSystem* audio, float deltaTime) {
+ }
+ 
+ static int32_t sf2000AudioCreateStream(AudioSystem* audio, const char* filename) {
++    if (!s_bgmEnabled) return -1;
+     Sf2000AudioSystem* sys = (Sf2000AudioSystem*)audio;
+     int32_t freeSlot = -1;
+     for (int i = 0; i < MAX_AUDIO_STREAMS; i++)
+diff --git a/src/sf2000/sf2000_audio.h b/src/sf2000/sf2000_audio.h
+index 5ec489fe3fcee82008241f1d097bf9dd763ea4c0..28a732d93edfaed569efdfd1da10b21def4ef463 100644
+--- a/src/sf2000/sf2000_audio.h
++++ b/src/sf2000/sf2000_audio.h
+@@ -1,6 +1,7 @@
+ #ifndef _BS_SF2000_AUDIO_H_
+ #define _BS_SF2000_AUDIO_H_
+ 
++#include <stdbool.h>
+ #include "audio_system.h"
+ #include "data_win.h"
+ 
+@@ -8,5 +9,6 @@ typedef struct Sf2000AudioSystem Sf2000AudioSystem;
+ 
+ Sf2000AudioSystem* Sf2000AudioSystem_create(DataWin* dataWin);
+ void Sf2000AudioSystem_renderFrame(void);
++void Sf2000AudioSystem_setBgmEnabled(bool enabled);
+ 
+ #endif /* _BS_SF2000_AUDIO_H_ */
+diff --git a/src/sf3000/main.c b/src/sf3000/main.c
+index 37189d3d2ea90c0c501bc682ff435d71b5ed93da..a23cf074b12fac515b033d702003a2410e8de1cb 100644
+--- a/src/sf3000/main.c
++++ b/src/sf3000/main.c
+@@ -18,14 +18,31 @@ static retro_audio_sample_batch_t audio_batch_cb;
+ static retro_input_poll_t input_poll_cb;
+ static retro_input_state_t input_state_cb;
+ static char data_path[1024], save_path[1024];
+-static bool loaded, started;
++static bool loaded, started, load_ready, game_exited, exit_requested;
+ static cothread_t frontend_thread, game_thread;
+ 
++static const struct retro_variable core_vars[] = {
++    { "butterscotch_bgm", "Background Music (OGG); disabled|enabled" },
++    { "butterscotch_texture_cache", "Texture Cache (MB); 12|8|16|4" },
++    { "butterscotch_bilinear", "Bilinear Filter; disabled|enabled" },
++    { NULL, NULL }
++};
++
++static void update_runtime_options(void) {
++    struct retro_variable var = { "butterscotch_bgm", NULL };
++    if (environment_cb && environment_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value) {
++        Sf2000AudioSystem_setBgmEnabled(strcmp(var.value, "enabled") == 0);
++    }
++}
++
+ void libretro_present_frame(const void *pixels, unsigned width, unsigned height, unsigned pitch) {
+     if (video_cb) video_cb(pixels, width, height, (size_t)pitch * sizeof(uint16_t));
+ }
+ 
+-void retro_set_environment(retro_environment_t cb) { environment_cb = cb; }
++void retro_set_environment(retro_environment_t cb) {
++    environment_cb = cb;
++    if (cb) cb(RETRO_ENVIRONMENT_SET_VARIABLES, (void *)core_vars);
++}
+ void retro_set_video_refresh(retro_video_refresh_t cb) { video_cb = cb; }
+ void retro_set_audio_sample(retro_audio_sample_t cb) { (void)cb; }
+ void retro_set_audio_sample_batch(retro_audio_sample_batch_t cb) { audio_batch_cb = cb; }
+@@ -49,7 +66,7 @@ void *retro_get_memory_data(unsigned id) { (void)id; return NULL; }
+ size_t retro_get_memory_size(unsigned id) { (void)id; return 0; }
+ 
+ void retro_get_system_info(struct retro_system_info *info) {
+-    *info = (struct retro_system_info){"Butterscotch", "1.0", "win|unx|butterscotch", true, false};
++    *info = (struct retro_system_info){"Butterscotch", "1.0", "unx|win|butterscotch", true, false};
+ }
+ 
+ void retro_get_system_av_info(struct retro_system_av_info *info) {
+@@ -58,8 +75,29 @@ void retro_get_system_av_info(struct retro_system_av_info *info) {
+     info->timing = (struct retro_system_timing){60.0, 22050.0};
+ }
+ 
++static void game_main(void) {
++    CommandLineArgs args = {0};
++    args.dataWinPath = data_path;
++    args.saveFolder = save_path;
++    args.exitAtFrame = -1;
++    args.renderer = SOFTWARE;
++    args.osType = OS_LINUX;
++    args.speedMultiplier = 1.0;
++    args.loadType = DATAWINLOADTYPE_LOAD_PER_CHUNK;
++    args.lazyRooms = true;
++    args.lazyTextures = true;
++    args.lazyAudio = true;
++    loop(args, "butterscotch");
++    game_exited = true;
++    loaded = false;
++    for (;;) co_switch(frontend_thread);
++}
++
+ bool retro_load_game(const struct retro_game_info *info) {
+     if (!info || !info->path || strlen(info->path) >= sizeof(data_path)) return false;
++    data_path[0] = '\0';
++    save_path[0] = '\0';
++
+     char content_dir[1024];
+     snprintf(content_dir, sizeof(content_dir), "%s", info->path);
+     char *slash = strrchr(content_dir, '/');
+@@ -109,8 +147,50 @@ bool retro_load_game(const struct retro_game_info *info) {
+     }
+     if (!found) return false;
+ 
+-    snprintf(save_path, sizeof(save_path), "%s", content_dir);
++    snprintf(save_path, sizeof(save_path), "%s", data_dir);
++
++    enum retro_pixel_format format = RETRO_PIXEL_FORMAT_RGB565;
++    if (environment_cb) environment_cb(RETRO_ENVIRONMENT_SET_PIXEL_FORMAT, &format);
++
++    int cache_mb = 12;
++    bool bilinear = false;
++    struct retro_variable var = {0};
++    var.key = "butterscotch_texture_cache";
++    if (environment_cb && environment_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value) {
++        int val = atoi(var.value);
++        if (val >= 4 && val <= 16) cache_mb = val;
++    }
++    var.key = "butterscotch_bilinear";
++    var.value = NULL;
++    if (environment_cb && environment_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value) {
++        bilinear = (strcmp(var.value, "enabled") == 0);
++    }
++    update_runtime_options();
++
++    SwRendererConfig config = {WIDTH, HEIGHT, cache_mb * 1024 * 1024, bilinear, false};
++    SwRenderer_setConfig(&config);
+     SwRenderer_setAssetDir(data_dir);
++
++    loaded = false;
++    started = true;
++    load_ready = false;
++    game_exited = false;
++    exit_requested = false;
++    frontend_thread = co_active();
++    game_thread = co_create(512 * 1024, game_main);
++    if (!game_thread) {
++        started = false;
++        data_path[0] = save_path[0] = '\0';
++        return false;
++    }
++    co_switch(game_thread);
++    if (game_exited || !load_ready) {
++        co_delete(game_thread);
++        game_thread = NULL;
++        started = false;
++        data_path[0] = save_path[0] = '\0';
++        return false;
++    }
+     loaded = true;
+     return true;
+ }
+@@ -120,43 +200,34 @@ bool retro_load_game_special(unsigned type, const struct retro_game_info *info,
+     return false;
+ }
+ 
+-static void game_main(void) {
+-    enum retro_pixel_format format = RETRO_PIXEL_FORMAT_RGB565;
+-    if (environment_cb) environment_cb(RETRO_ENVIRONMENT_SET_PIXEL_FORMAT, &format);
+-    SwRendererConfig config = {WIDTH, HEIGHT, 3 * 1024 * 1024, false, false};
+-    SwRenderer_setConfig(&config);
+-
+-    CommandLineArgs args = {0};
+-    args.dataWinPath = data_path;
+-    args.saveFolder = save_path;
+-    args.exitAtFrame = -1;
+-    args.renderer = SOFTWARE;
+-    args.osType = OS_LINUX;
+-    args.speedMultiplier = 1.0;
+-    args.loadType = DATAWINLOADTYPE_LOAD_PER_CHUNK;
+-    args.lazyRooms = true;
+-    args.lazyTextures = true;
+-    args.lazyAudio = true;
+-    loop(args, "butterscotch");
+-    loaded = false;
+-    for (;;) co_switch(frontend_thread);
+-}
+-
+ void retro_run(void) {
+-    if (!loaded) return;
++    if (!loaded || !game_thread) return;
+     if (input_poll_cb) input_poll_cb();
+-    frontend_thread = co_active();
+-    if (!started) {
+-        started = true;
+-        game_thread = co_create(1024 * 1024, game_main);
++    bool vars_updated = false;
++    if (environment_cb && environment_cb(RETRO_ENVIRONMENT_GET_VARIABLE_UPDATE, &vars_updated) && vars_updated) {
++        update_runtime_options();
+     }
++    frontend_thread = co_active();
+     co_switch(game_thread);
++    if (game_exited) {
++        loaded = false;
++        if (environment_cb) environment_cb(RETRO_ENVIRONMENT_SHUTDOWN, NULL);
++    }
+ }
+ 
+ void retro_unload_game(void) {
+-    if (game_thread) co_delete(game_thread);
++    if (game_thread) {
++        if (!game_exited) {
++            exit_requested = true;
++            frontend_thread = co_active();
++            for (int i = 0; i < 16 && !game_exited; i++) {
++                co_switch(game_thread);
++            }
++        }
++        co_delete(game_thread);
++    }
+     game_thread = NULL;
+-    loaded = started = false;
++    loaded = started = load_ready = game_exited = exit_requested = false;
+     data_path[0] = save_path[0] = '\0';
+ }
+ 
+@@ -165,3 +236,10 @@ int16_t libretro_input(unsigned id) {
+ }
+ 
+ void libretro_yield_frame(void) { co_switch(frontend_thread); }
++
++void libretro_notify_load_ready(void) {
++    load_ready = true;
++    co_switch(frontend_thread);
++}
++
++bool libretro_should_exit(void) { return exit_requested; }
+diff --git a/src/sw_renderer/sw_renderer.c b/src/sw_renderer/sw_renderer.c
+index 61c16d184e663034c6bc0e18dc1cc82223d40d44..3a7c1208c88296c938c27f8913dadd3e883d43aa 100644
+--- a/src/sw_renderer/sw_renderer.c
++++ b/src/sw_renderer/sw_renderer.c
+@@ -1289,7 +1289,9 @@ static void swInit(Renderer* renderer, DataWin* dataWin) {
+ 
+     if (!sw->atlasOpen) {
+         if (SwAtlas_open(&sw->atlas, g_assetDir)) {
+-            sw->atlas.cacheBudget = 3u * 1024u * 1024u;    /* Keep peak use modest on low-RAM handhelds. */
++            sw->atlas.cacheBudget = (s_has_pending_cfg && s_pending_cfg.cacheBytes > 0)
++                ? (uint32_t)s_pending_cfg.cacheBytes
++                : (12u * 1024u * 1024u);
+             sw->atlasOpen = true;
+             logInfo("SW renderer: atlas opened from %s (%u blocks)\n",
+                     g_assetDir, sw->atlas.count);
+
+base-commit: c43543e76391396cf2ef40a62b219d6717a24521
+-- 
+2.43.0
+

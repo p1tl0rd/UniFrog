@@ -321,7 +321,8 @@ SF2000_PORT_SPECS := \
 	fceumm-prosty:$(CORE_SOURCE_ROOT)/libretro-fceumm-prosty:Makefile.libretro:fceumm_libretro_sf2000.a:fceumm_prosty_libretro_sf2000.a:fceumm_prosty \
 	prboom:$(CORE_SOURCE_ROOT)/libretro-prboom:Makefile:prboom_libretro_sf2000.a:prboom_libretro_sf2000.a:prboom \
 	nxengine:$(CORE_SOURCE_ROOT)/libretro-nxengine:Makefile:nxengine_libretro_sf2000.a:nxengine_libretro_sf2000.a:nxengine \
-	ecwolf:$(CORE_SOURCE_ROOT)/ecwolf/src/libretro:Makefile:ecwolf_libretro_sf2000.a:ecwolf_libretro_sf2000.a:ecwolf
+	ecwolf:$(CORE_SOURCE_ROOT)/ecwolf/src/libretro:Makefile:ecwolf_libretro_sf2000.a:ecwolf_libretro_sf2000.a:ecwolf \
+	butterscotch:$(CORE_SOURCE_ROOT)/butterscotch:Makefile.unifrog:butterscotch_libretro_sf2000.a:butterscotch_libretro_sf2000.a:butterscotch
 
 SF2000_PORT_TARGETS := $(foreach spec,$(SF2000_PORT_SPECS),$(word 1,$(subst :, ,$(spec))))
 
@@ -339,6 +340,7 @@ atari800lib_PORT_ARGS := A5200=0
 fbalpha2012_PORT_ARGS := PROFILE=performance
 frodo-prosty_PORT_ARGS := EMUTYPE=frodo
 snes9x2005-prosty_PORT_ARGS := USE_BLARGG_APU=0
+butterscotch_PORT_ARGS := LIBRETRO_COMMON_INC="$(abspath $(LIBRETRO_COMMON_DIR))/include"
 
 CORE_TARGETS := gambatte gpsp gpsp_multicore picodrive snes9x2005 snes9x2002 \
 	quicknes fceumm gearboy pce-fast qpsx frogui $(SF2000_PORT_TARGETS)
@@ -608,6 +610,8 @@ core-init:
 				git -C "$$dr_dir" clean -fdx -q; \
 			elif test "$$name" = ecwolf; then \
 				git -C "$$dir" submodule update --init --depth 1 $$sub_filter_arg --jobs "$(JOBS)" -- src/libretro/libretro-common; \
+			elif test "$$name" = butterscotch; then \
+				:; \
 			else \
 				git -C "$$dir" submodule update --init --depth 1 $$sub_filter_arg --jobs "$(JOBS)"; \
 			fi; \

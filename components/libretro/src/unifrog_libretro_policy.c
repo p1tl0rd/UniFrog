@@ -67,6 +67,8 @@ static const struct system_core system_cores[] = {
    { "NXENGINE", "nxengine" },
    { "WOLF3D", "ecwolf" },
    { "ECWOLF", "ecwolf" },
+   { "UNDERTALE", "butterscotch" },
+   { "BUTTERSCOTCH", "butterscotch" },
 };
 
 static size_t cycle_index(const int *values, size_t count, int current,

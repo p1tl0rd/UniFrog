@@ -79,6 +79,7 @@ upstream checkouts plus generated UniFrog patch queues under `cores/patches/`.
 | PrBoom | `.deps/cores/libretro-prboom` | GPL-2.0. See `COPYING`. |
 | NXEngine | `.deps/cores/libretro-nxengine` | GPL-3.0. See `nxengine/LICENSE`. |
 | ECWolf | `.deps/cores/ecwolf` | GPL-2.0. See `docs/license-gpl.txt` and component notices. |
+| Butterscotch (FroggyTale) | `.deps/cores/butterscotch` | AGPL-3.0. See `LICENSE`. |
 
 ## Assets
 
