@@ -6,16 +6,16 @@ Subject: [PATCH] Add UniFrog SF2000/GB300 libretro port
 ---
  Makefile.unifrog              |  90 +++++++++++++++++++++
  src/backends/libretro.c       |  23 +++++-
- src/data_win.c                |  18 ++++-
+ src/data_win.c                |  65 ++++++++++++---
  src/gettime.c                 |   5 ++
  src/loop.c                    |  42 +++++++++-
  src/overlay_file_system.c     |  10 ++-
  src/runner.c                  |   4 +-
- src/sf2000/sf2000_audio.c     |  10 +++
+ src/sf2000/sf2000_audio.c     |  11 +++
  src/sf2000/sf2000_audio.h     |   2 +
  src/sf3000/main.c             | 144 ++++++++++++++++++++++++++--------
  src/sw_renderer/sw_renderer.c |   4 +-
- 11 files changed, 305 insertions(+), 47 deletions(-)
+ 11 files changed, 346 insertions(+), 54 deletions(-)
  create mode 100644 Makefile.unifrog
 
 diff --git a/Makefile.unifrog b/Makefile.unifrog
@@ -173,10 +173,90 @@ index 9eb49a7b67811e7c07bc98be1ae7d5d631124f26..53463033d664e9af0e231e3b96bb4426
 +#endif
  }
 diff --git a/src/data_win.c b/src/data_win.c
-index 5c609c9aba1fad65f110debb8f4db90376ad3df3..3d707d29e92c30c67427e1d58559cb9b0da07dd1 100644
+index 5c609c9aba1fad65f110debb8f4db90376ad3df3..6ab9ba01a9c9b512762f0c018587b79f990d9733 100644
 --- a/src/data_win.c
 +++ b/src/data_win.c
-@@ -2826,7 +2826,11 @@ DataWin* DataWin_parse(const char* filePath, DataWinParserOptions options) {
+@@ -1,5 +1,6 @@
+ #include "data_win.h"
+ #include "binary_reader.h"
++#include "binary_utils.h"
+ 
+ #include <stdbool.h>
+ #include "stdio_compat.h"
+@@ -2770,14 +2771,19 @@ static void parseAUDO(BinaryReader* reader, DataWin* dw, bool loadAudioDataLazil
+     a->entries = (AudioEntry *)safeCalloc(count, sizeof(AudioEntry));
+     repeat(count, i) {
+         if (ptrs[i] == 0) continue;
++        if (loadAudioDataLazily) {
++            a->entries[i].present = true;
++            a->entries[i].dataSize = 0;
++            a->entries[i].dataOffset = ptrs[i] + 4;
++            a->entries[i].data = nullptr;
++            continue;
++        }
+         BinaryReader_seek(reader, ptrs[i]);
+         a->entries[i].present = true;
+         a->entries[i].dataSize = BinaryReader_readUint32(reader);
+         a->entries[i].dataOffset = (uint32_t)BinaryReader_getPosition(reader);
+         // Load audio data into owned buffer
+-        if (loadAudioDataLazily) {
+-            a->entries[i].data = nullptr;
+-        } else if (dw->mappedFile) {
++        if (dw->mappedFile) {
+             a->entries[i].data = dw->mappedFile + a->entries[i].dataOffset;
+         } else if (a->entries[i].dataSize > 0) {
+             a->entries[i].data = (uint8_t *)safeMalloc(a->entries[i].dataSize);
+@@ -2793,21 +2799,46 @@ void DataWin_loadAudoIfNeeded(DataWin* dw, uint32_t audioEntryId) {
+     Audo* a = &dw->audo;
+     AudioEntry* entry = &a->entries[audioEntryId];
+ 
+-    if (!entry->present || entry->dataSize == 0) return;
++    if (!entry->present) return;
+     if (entry->data != nullptr) return;
++    if (entry->dataSize == 0 && entry->dataOffset < 4) return;
+ 
+     if (!dw->lazyLoadFile) {
+         logError("loadAudoIfNeeded: called without a lazy load file.\n");
+         return;
+     }
+ 
++#ifndef PLATFORM_UNIFROG
++    long old_seek = ftell(dw->lazyLoadFile);
++#endif
++    if (entry->dataSize == 0) {
++        uint8_t sizeBuf[4];
++        if (fseek(dw->lazyLoadFile, (long)(entry->dataOffset - 4), SEEK_SET) != 0 ||
++            fread(sizeBuf, 1, 4, dw->lazyLoadFile) != 4) {
++            logError("loadAudoIfNeeded: couldn't read header for audio entry %u.\n", audioEntryId);
++#ifndef PLATFORM_UNIFROG
++            fseek(dw->lazyLoadFile, old_seek, SEEK_SET);
++#endif
++            return;
++        }
++        entry->dataSize = BinaryUtils_readUint32(sizeBuf);
++        if (entry->dataSize == 0) {
++#ifndef PLATFORM_UNIFROG
++            fseek(dw->lazyLoadFile, old_seek, SEEK_SET);
++#endif
++            return;
++        }
++    } else {
++        fseek(dw->lazyLoadFile, (long)entry->dataOffset, SEEK_SET);
++    }
++
+     entry->data = (uint8_t *)safeMalloc(entry->dataSize);
+ 
+     memset(entry->data, 0, entry->dataSize);
+-    long old_seek = ftell(dw->lazyLoadFile);
+-    fseek(dw->lazyLoadFile, entry->dataOffset, SEEK_SET);
+     size_t read = fread(entry->data, 1, entry->dataSize, dw->lazyLoadFile);
++#ifndef PLATFORM_UNIFROG
+     fseek(dw->lazyLoadFile, old_seek, SEEK_SET);
++#endif
+ 
+     if (read != entry->dataSize) {
+         logError("loadAudoIfNeeded: couldn't read %u bytes to load audio entry %u.\n", entry->dataSize, audioEntryId);
+@@ -2826,7 +2857,11 @@ DataWin* DataWin_parse(const char* filePath, DataWinParserOptions options) {
      // Use a large read buffer to reduce the number of physical reads
      // This is critical for slow I/O devices like the PS2 CDVD drive, where each fread
      // call would otherwise trigger a separate disc read of just a few sectors
@@ -188,7 +268,7 @@ index 5c609c9aba1fad65f110debb8f4db90376ad3df3..3d707d29e92c30c67427e1d58559cb9b
  
      fseek(file, 0, SEEK_END);
      long fileSizeRaw = ftell(file);
-@@ -2976,9 +2980,17 @@ DataWin* DataWin_parse(const char* filePath, DataWinParserOptions options) {
+@@ -2976,9 +3011,17 @@ DataWin* DataWin_parse(const char* filePath, DataWinParserOptions options) {
              (options.parseAudo && memcmp(chunkName, "AUDO", 4) == 0) ||
              (memcmp(chunkName, "ACRV", 4) == 0);
  
@@ -208,7 +288,7 @@ index 5c609c9aba1fad65f110debb8f4db90376ad3df3..3d707d29e92c30c67427e1d58559cb9b
              chunkBuffer = (uint8_t *)malloc(chunkLength);
              if (chunkBuffer) {
                  size_t read = fread(chunkBuffer, 1, chunkLength, reader.file);
-@@ -3092,6 +3104,8 @@ DataWin* DataWin_parse(const char* filePath, DataWinParserOptions options) {
+@@ -3092,15 +3135,19 @@ DataWin* DataWin_parse(const char* filePath, DataWinParserOptions options) {
          if (chunkBuffer != nullptr) {
              BinaryReader_clearBuffer(&reader);
              free(chunkBuffer);
@@ -216,7 +296,19 @@ index 5c609c9aba1fad65f110debb8f4db90376ad3df3..3d707d29e92c30c67427e1d58559cb9b
 +            BinaryReader_clearBuffer(&reader);
          }
  
++        chunkIndex++;
++        if (chunkEnd >= fileSize) break;
++
          // Seek to chunk end (skip any unread data or trailing padding)
+         if (options.loadType != DATAWINLOADTYPE_LOAD_PER_CHUNK) {
+             BinaryReader_seek(&reader, chunkEnd);
+         } else {
+             fseek(reader.file, (long) chunkEnd, SEEK_SET);
+         }
+-        chunkIndex++;
+     }
+ 
+     // GMS2: apply default FPS to rooms with speed=0
 diff --git a/src/gettime.c b/src/gettime.c
 index 15365b05da5413c42a2f0a8317ee05e72e1785b1..98e3959b5132179ef922a142f49a10a665ef80cc 100644
 --- a/src/gettime.c
@@ -425,7 +517,7 @@ index c2c2ee0a498be5f0e0f4bf767da688dc7ea2e75a..ddebca5dc65c7a504b4a381088d8ff3b
  }
  
 diff --git a/src/sf2000/sf2000_audio.c b/src/sf2000/sf2000_audio.c
-index 756f9c0f7a645d7821c9175913dfc60560920bca..9ef438a9d7158c46c37600c86929e3771a42ae50 100644
+index 756f9c0f7a645d7821c9175913dfc60560920bca..db17ce2d8441b854f393ff84374e595be15f6cdd 100644
 --- a/src/sf2000/sf2000_audio.c
 +++ b/src/sf2000/sf2000_audio.c
 @@ -152,6 +152,15 @@ struct Sf2000AudioSystem {
@@ -452,6 +544,14 @@ index 756f9c0f7a645d7821c9175913dfc60560920bca..9ef438a9d7158c46c37600c86929e377
      Sf2000AudioSystem* sys = (Sf2000AudioSystem*)audio;
      int32_t freeSlot = -1;
      for (int i = 0; i < MAX_AUDIO_STREAMS; i++)
+@@ -340,6 +350,7 @@ static int32_t sf2000AudioPlaySound(AudioSystem* audio, int32_t soundIndex, int3
+             }
+         }
+     } else {
++        if (!s_bgmEnabled) return -1;
+         char filename[512];
+         const char* file = sound->file;
+         if (!file || !file[0]) return -1;
 diff --git a/src/sf2000/sf2000_audio.h b/src/sf2000/sf2000_audio.h
 index 5ec489fe3fcee82008241f1d097bf9dd763ea4c0..28a732d93edfaed569efdfd1da10b21def4ef463 100644
 --- a/src/sf2000/sf2000_audio.h
