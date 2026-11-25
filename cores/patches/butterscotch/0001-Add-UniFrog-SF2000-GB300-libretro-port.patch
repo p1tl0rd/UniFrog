@@ -6,14 +6,15 @@ Subject: [PATCH] Add UniFrog SF2000/GB300 libretro port
 ---
  Makefile.unifrog              |  90 +++++++++++++++++++++
  src/backends/libretro.c       |  22 +++++-
+ src/data_win.c                |  18 ++++-
  src/gettime.c                 |   5 ++
- src/loop.c                    |  25 +++++-
+ src/loop.c                    |  39 ++++++++-
  src/overlay_file_system.c     |  10 ++-
  src/sf2000/sf2000_audio.c     |  10 +++
  src/sf2000/sf2000_audio.h     |   2 +
  src/sf3000/main.c             | 144 ++++++++++++++++++++++++++--------
  src/sw_renderer/sw_renderer.c |   4 +-
- 9 files changed, 268 insertions(+), 44 deletions(-)
+ 10 files changed, 298 insertions(+), 46 deletions(-)
  create mode 100644 Makefile.unifrog
 
 diff --git a/Makefile.unifrog b/Makefile.unifrog
@@ -169,6 +170,51 @@ index 9eb49a7b67811e7c07bc98be1ae7d5d631124f26..f08b9ac43b340a08c59a1042819f3da5
 +#endif
 +    vfprintf(stderr, format, args);
  }
+diff --git a/src/data_win.c b/src/data_win.c
+index 5c609c9aba1fad65f110debb8f4db90376ad3df3..3d707d29e92c30c67427e1d58559cb9b0da07dd1 100644
+--- a/src/data_win.c
++++ b/src/data_win.c
+@@ -2826,7 +2826,11 @@ DataWin* DataWin_parse(const char* filePath, DataWinParserOptions options) {
+     // Use a large read buffer to reduce the number of physical reads
+     // This is critical for slow I/O devices like the PS2 CDVD drive, where each fread
+     // call would otherwise trigger a separate disc read of just a few sectors
++#ifdef PLATFORM_UNIFROG
++    setvbuf(file, nullptr, _IOFBF, 4096);
++#else
+     setvbuf(file, nullptr, _IOFBF, 128 * 1024);
++#endif
+ 
+     fseek(file, 0, SEEK_END);
+     long fileSizeRaw = ftell(file);
+@@ -2976,9 +2980,17 @@ DataWin* DataWin_parse(const char* filePath, DataWinParserOptions options) {
+             (options.parseAudo && memcmp(chunkName, "AUDO", 4) == 0) ||
+             (memcmp(chunkName, "ACRV", 4) == 0);
+ 
+-        // Bulk-read the chunk data into memory for fast parsing
++        // Bulk-read the chunk data into memory for fast parsing.
++        // Skip bulk-reading TXTR/AUDO when lazy-loaded (otherwise we read ~47 MB of unused
++        // PNG/WAV blobs from SD), and reuse the STRG buffer already loaded in Pass 1.
+         uint8_t* chunkBuffer = nullptr;
+-        if (shouldParse && chunkLength > 0 && options.loadType == DATAWINLOADTYPE_LOAD_PER_CHUNK) {
++        bool skipBulkRead =
++            (memcmp(chunkName, "TXTR", 4) == 0 && options.lazyLoadTextures) ||
++            (memcmp(chunkName, "AUDO", 4) == 0 && options.lazyLoadAudio);
++        if (shouldParse && chunkLength > 0 && options.loadType == DATAWINLOADTYPE_LOAD_PER_CHUNK &&
++            memcmp(chunkName, "STRG", 4) == 0 && dw->strgBuffer != nullptr) {
++            BinaryReader_setBuffer(&reader, dw->strgBuffer, dw->strgBufferBase, chunkLength);
++        } else if (shouldParse && !skipBulkRead && chunkLength > 0 && options.loadType == DATAWINLOADTYPE_LOAD_PER_CHUNK) {
+             chunkBuffer = (uint8_t *)malloc(chunkLength);
+             if (chunkBuffer) {
+                 size_t read = fread(chunkBuffer, 1, chunkLength, reader.file);
+@@ -3092,6 +3104,8 @@ DataWin* DataWin_parse(const char* filePath, DataWinParserOptions options) {
+         if (chunkBuffer != nullptr) {
+             BinaryReader_clearBuffer(&reader);
+             free(chunkBuffer);
++        } else if (options.loadType == DATAWINLOADTYPE_LOAD_PER_CHUNK && reader.buffer != nullptr) {
++            BinaryReader_clearBuffer(&reader);
+         }
+ 
+         // Seek to chunk end (skip any unread data or trailing padding)
 diff --git a/src/gettime.c b/src/gettime.c
 index 15365b05da5413c42a2f0a8317ee05e72e1785b1..98e3959b5132179ef922a142f49a10a665ef80cc 100644
 --- a/src/gettime.c
@@ -193,7 +239,7 @@ index 15365b05da5413c42a2f0a8317ee05e72e1785b1..98e3959b5132179ef922a142f49a10a6
      struct timespec ts;
      clock_gettime(CLOCK_MONOTONIC, &ts);
 diff --git a/src/loop.c b/src/loop.c
-index 2a1accb23d93b9e9b8965be7f67e502a44f73911..2567aa7c4712068f67273b56d474efff26b6aca1 100644
+index 2a1accb23d93b9e9b8965be7f67e502a44f73911..bef5e756dabf4976cb0c88083bf0570eefe8a054 100644
 --- a/src/loop.c
 +++ b/src/loop.c
 @@ -78,6 +78,11 @@
@@ -235,7 +281,24 @@ index 2a1accb23d93b9e9b8965be7f67e502a44f73911..2567aa7c4712068f67273b56d474efff
  #define USE_CRASH_SIGNAL_HANDLER
  typedef struct { int key; struct sigaction value; } PreviousSignalActionEntry;
  static PreviousSignalActionEntry* previousSignalActions = nullptr;
-@@ -606,7 +615,7 @@ int loop(CommandLineArgs args, const char *argv0) {
+@@ -535,6 +544,16 @@ static void sf2000_progress_callback(const char* chunkName, int chunkIndex, int
+ }
+ #endif
+ 
++#ifdef PLATFORM_UNIFROG
++static void unifrog_wad_progress_callback(const char* chunkName, int chunkIndex, int totalChunks, DataWin* dataWin, void* userData) {
++    (void)dataWin; (void)userData;
++    char stage[24];
++    snprintf(stage, sizeof(stage), "WAD %.4s", chunkName ? chunkName : "????");
++    unsigned pct = 15u + (totalChunks > 0 ? (unsigned)((chunkIndex * 55) / totalChunks) : 0u);
++    unifrog_core_load_progress(stage, pct, 100u);
++}
++#endif
++
+ // ===[ MAIN ]===
+ int loop(CommandLineArgs args, const char *argv0) {
+ #ifdef _WIN32
+@@ -606,7 +625,7 @@ int loop(CommandLineArgs args, const char *argv0) {
              options.parseTxtr = false;
          } while(0);
  #endif
@@ -244,33 +307,44 @@ index 2a1accb23d93b9e9b8965be7f67e502a44f73911..2567aa7c4712068f67273b56d474efff
          if (!args.headless)
              options.parseAudo = true;
  #endif
-@@ -619,6 +628,9 @@ int loop(CommandLineArgs args, const char *argv0) {
+@@ -619,6 +638,10 @@ int loop(CommandLineArgs args, const char *argv0) {
  #ifdef PLATFORM_SF2000
          options.progressCallback = sf2000_progress_callback;
          hacker_loader_log("WAD", "PARSING WAD CHUNKS...", 32);
 +#endif
 +#ifdef PLATFORM_UNIFROG
-+        unifrog_core_load_progress("WAD", 25, 100);
++        options.progressCallback = unifrog_wad_progress_callback;
++        unifrog_core_load_progress("WAD SCAN", 10, 100);
  #endif
          DataWin* dataWin = DataWin_parse(currentDataWinPath, options);
  #ifdef PLATFORM_SF2000
-@@ -929,6 +941,9 @@ int loop(CommandLineArgs args, const char *argv0) {
+@@ -642,6 +665,9 @@ int loop(CommandLineArgs args, const char *argv0) {
+         // Initialize VM
+ #ifdef PLATFORM_SF2000
+         hacker_loader_log("VM", "INIT GAMEMAKER VM", 80);
++#endif
++#ifdef PLATFORM_UNIFROG
++        unifrog_core_load_progress("VM INIT", 75, 100);
+ #endif
+         VMContext* vm = VM_create(dataWin);
+ 
+@@ -929,6 +955,9 @@ int loop(CommandLineArgs args, const char *argv0) {
          if (gfx == SOFTWARE) {
  #ifdef PLATFORM_SF2000
              hacker_loader_log("ATLS", "INIT SPRITE ATLAS...", 70);
 +#endif
 +#ifdef PLATFORM_UNIFROG
-+            unifrog_core_load_progress("ATLAS", 65, 100);
++            unifrog_core_load_progress("ATLAS", 82, 100);
  #endif
              renderer = SWRenderer_create();
  #ifdef PLATFORM_SF2000
-@@ -1090,8 +1105,14 @@ int loop(CommandLineArgs args, const char *argv0) {
+@@ -1090,8 +1119,14 @@ int loop(CommandLineArgs args, const char *argv0) {
          // Initialize the first room and fire Game Start / Room Start events
  #ifdef PLATFORM_SF2000
          hacker_loader_log("ROOM", "LOADING FIRST ROOM...", 95);
 +#endif
 +#ifdef PLATFORM_UNIFROG
-+        unifrog_core_load_progress("ROOM", 90, 100);
++        unifrog_core_load_progress("FIRST ROOM", 92, 100);
  #endif
          Runner_initFirstRoom(runner);
 +#ifdef PLATFORM_UNIFROG
