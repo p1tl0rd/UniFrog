@@ -1,0 +1,26 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: UniFrog CI <ci@unifrog.local>
+Date: Fri, 27 Nov 2026 11:19:29 +0000
+Subject: [PATCH 3/3] Enable -O3 -DNDEBUG for SF2000
+
+---
+ Makefile.libretro | 3 +++
+ 1 file changed, 3 insertions(+)
+
+diff --git a/Makefile.libretro b/Makefile.libretro
+index 701c0db995a00c22490dc20a4f6fd2aa13028810..2d026199634dd6e40b74b3b75339df8d5f7bf98a 100644
+--- a/Makefile.libretro
++++ b/Makefile.libretro
+@@ -658,6 +658,9 @@ else
+ endif
+    CFLAGS   += -DDEBUG
+    CXXFLAGS += -DDEBUG
++else ifeq ($(platform), sf2000)
++   CFLAGS   += -O3 -DNDEBUG
++   CXXFLAGS += -O3 -DNDEBUG
+ else
+ ifneq (,$(findstring msvc,$(platform)))
+    CFLAGS   += -MT
+-- 
+2.43.0
+

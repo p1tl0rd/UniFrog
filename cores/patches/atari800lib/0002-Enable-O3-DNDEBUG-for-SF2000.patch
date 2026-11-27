@@ -1,0 +1,26 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: UniFrog CI <ci@unifrog.local>
+Date: Fri, 27 Nov 2026 11:19:30 +0000
+Subject: [PATCH 2/2] Enable -O3 -DNDEBUG for SF2000
+
+---
+ Makefile | 3 +++
+ 1 file changed, 3 insertions(+)
+
+diff --git a/Makefile b/Makefile
+index 50d413e134363c7d7ba4fad97b4d4fe001df9b7a..0beefae1305986e2b0fcc3c76ded89b15b0a6260 100644
+--- a/Makefile
++++ b/Makefile
+@@ -504,6 +504,9 @@ endif
+ ifeq ($(DEBUG), 1)
+ 	CFLAGS += -O0 -g
+ 	CXXFLAGS += -O0 -g
++else ifeq ($(platform), sf2000)
++	CFLAGS += -O3 -DNDEBUG
++	CXXFLAGS += -O3 -fno-exceptions -fno-rtti -DHAVE_STDINT_H -DNDEBUG
+ else
+ 	CFLAGS += -O2 -DNDEBUG
+ 	CXXFLAGS += -O2 -fno-exceptions -fno-rtti -DHAVE_STDINT_H -DNDEBUG
+-- 
+2.43.0
+

@@ -144,16 +144,16 @@ CORE_BASE_CFLAGS := $(MIPS_CORE_CFLAGS) \
 PICODRIVE_CFLAGS := $(CORE_BASE_CFLAGS) $(PICODRIVE_RENAME_CFLAGS) \
 	-Wno-stringop-overflow
 SNES9X2005_CFLAGS := $(CORE_BASE_CFLAGS) $(SNES9X2005_RENAME_CFLAGS) \
-	-Wno-array-bounds -Wno-char-subscripts -Wno-format
+	-O3 -DNDEBUG -Wno-array-bounds -Wno-char-subscripts -Wno-format
 SNES9X2002_CFLAGS := $(CORE_BASE_CFLAGS) $(SNES9X2002_RENAME_CFLAGS) \
-	-Wno-array-bounds -Wno-char-subscripts -Wno-format \
+	-O3 -DNDEBUG -Wno-array-bounds -Wno-char-subscripts -Wno-format \
 	-Wno-implicit-fallthrough -Wno-maybe-uninitialized -Wno-restrict \
 	-Wno-shift-negative-value -Wno-unused-value
-QUICKNES_CFLAGS := $(CORE_BASE_CFLAGS) $(QUICKNES_RENAME_CFLAGS)
-FCEUMM_CFLAGS := $(CORE_BASE_CFLAGS) $(FCEUMM_RENAME_CFLAGS)
-GEARBOY_CFLAGS := $(CORE_BASE_CFLAGS) $(GEARBOY_RENAME_CFLAGS) -DMINIZ_NO_TIME \
+QUICKNES_CFLAGS := $(CORE_BASE_CFLAGS) $(QUICKNES_RENAME_CFLAGS) -O3 -DNDEBUG
+FCEUMM_CFLAGS := $(CORE_BASE_CFLAGS) $(FCEUMM_RENAME_CFLAGS) -O3 -DNDEBUG
+GEARBOY_CFLAGS := $(CORE_BASE_CFLAGS) $(GEARBOY_RENAME_CFLAGS) -O3 -DNDEBUG -DMINIZ_NO_TIME \
 	-Wno-misleading-indentation -Wno-unused-function
-PCE_FAST_CFLAGS := $(CORE_BASE_CFLAGS) $(PCE_FAST_RENAME_CFLAGS)
+PCE_FAST_CFLAGS := $(CORE_BASE_CFLAGS) $(PCE_FAST_RENAME_CFLAGS) -O3 -DNDEBUG
 QPSX_CFLAGS := $(CORE_BASE_CFLAGS) $(QPSX_RENAME_CFLAGS) \
 	-Wno-error=incompatible-pointer-types \
 	-Wno-error=implicit-function-declaration \

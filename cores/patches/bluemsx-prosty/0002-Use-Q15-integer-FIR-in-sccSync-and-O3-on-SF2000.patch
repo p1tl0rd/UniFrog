@@ -1,0 +1,76 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: UniFrog CI <ci@unifrog.local>
+Date: Fri, 27 Nov 2026 11:18:44 +0000
+Subject: [PATCH 2/2] Use Q15 integer FIR in sccSync and -O3 on SF2000
+
+---
+ Makefile.libretro    |  3 +++
+ Src/SoundChips/SCC.c | 24 ++++++++++++++++++++++++
+ 2 files changed, 27 insertions(+)
+
+diff --git a/Makefile.libretro b/Makefile.libretro
+index 954c1b753b513b5b8d95a7e9edf8cdfc4a93947f..cf27c5f959857a9a89dd34246ba26916fb93c90c 100644
+--- a/Makefile.libretro
++++ b/Makefile.libretro
+@@ -688,6 +688,9 @@ endif
+ ifeq ($(DEBUG), 1)
+ 	CFLAGS += -O0 -g
+ 	CXXFLAGS += -O0 -g
++else ifeq ($(platform), sf2000)
++	CFLAGS += -O3 -DNDEBUG
++	CXXFLAGS += -O3 -fno-exceptions -fno-rtti -DHAVE_STDINT_H -DNDEBUG
+ else
+ 	CFLAGS += -O2
+ 	CXXFLAGS += -O2 -fno-exceptions -fno-rtti -DHAVE_STDINT_H -DNDEBUG
+diff --git a/Src/SoundChips/SCC.c b/Src/SoundChips/SCC.c
+index 6870952596a80bcfb8dff47688357d688e83f155..ca3c1480dcb69371dee4b4b8771c86f7e87ca83e 100644
+--- a/Src/SoundChips/SCC.c
++++ b/Src/SoundChips/SCC.c
+@@ -32,6 +32,7 @@
+ #include "Language.h"
+ #include <stdlib.h>
+ #include <string.h>
++#include <stdint.h>
+ 
+ 
+ //#define BASE_PHASE_STEP 0x28959becUL  /* = (1 << 28) * 3579545 / 32 / 44100 */
+@@ -611,6 +612,28 @@ static Int32 filter(SCC* scc, Int32 input) {
+ //
+ static Int32 filter4(SCC* scc, Int32 in1, Int32 in2, Int32 in3, Int32 in4)
+ {
++#ifdef SF2000
++    static const int16_t k_scc_fir_q15[48] = {
++          9,    3,   -9,  -21,  -26,  -18,    4,   30,   49,   47,   19,  -28,
++        -72,  -90,  -65,    0,   80,  138,  137,   65,  -55, -172, -226, -176,
++        -27,  165,  312,  329,  184,  -83, -361, -512, -435, -121,  323,  701,
++        809,  527, -105, -867, -1414, -1394, -590, 980, 3032, 5081, 6590, 7146
++    };
++    int i;
++    int64_t acc;
++
++    memmove(scc->in, scc->in + 4, 91 * sizeof(Int32));
++    scc->in[91] = in1;
++    scc->in[92] = in2;
++    scc->in[93] = in3;
++    scc->in[94] = in4;
++
++    acc = (int64_t)k_scc_fir_q15[47] * scc->in[47];
++    for (i = 0; i < 47; ++i) {
++        acc += (int64_t)k_scc_fir_q15[i] * (scc->in[i] + scc->in[94 - i]);
++    }
++    return (Int32)((acc + 16384) >> 15);
++#else
+     int i;
+     DoubleT res;
+ 
+@@ -672,6 +695,7 @@ static Int32 filter4(SCC* scc, Int32 in1, Int32 in2, Int32 in3, Int32 in4)
+            0.2180678    *  scc->in[47];
+ 
+     return (Int32)res;
++#endif
+ }
+ 
+ static Int32* sccSync(SCC* scc, UInt32 count)
+-- 
+2.43.0
+

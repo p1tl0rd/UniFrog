@@ -1,0 +1,28 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: tuns <tu.nguyensi@phenikaa-uni.edu.vn>
+Date: Fri, 27 Nov 2026 11:19:30 +0000
+Subject: [PATCH] Enable -O3 -DNDEBUG for SF2000
+
+---
+ Makefile | 3 +++
+ 1 file changed, 3 insertions(+)
+
+diff --git a/Makefile b/Makefile
+index 8ebff272278a998c484e83dc38c254690e7c9c9d..a60569708bb895f2f4e7dad5edfc4f1ab1cbd837 100644
+--- a/Makefile
++++ b/Makefile
+@@ -650,6 +650,9 @@ else
+ endif
+    CFLAGS   += -DDEBUG
+    CXXFLAGS += -DDEBUG
++else ifeq ($(platform), sf2000)
++   CFLAGS   += -O3 -DNDEBUG
++   CXXFLAGS += -O3 -DNDEBUG
+ else
+ ifneq (,$(findstring msvc,$(platform)))
+    CFLAGS   += -MT
+
+base-commit: 9a6852e768cbabfcaa884f2d69cd8ea8cea37b69
+-- 
+2.43.0
+

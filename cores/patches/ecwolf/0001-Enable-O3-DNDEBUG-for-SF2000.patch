@@ -1,0 +1,27 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: tuns <tu.nguyensi@phenikaa-uni.edu.vn>
+Date: Fri, 27 Nov 2026 11:19:29 +0000
+Subject: [PATCH] Enable -O3 -DNDEBUG for SF2000
+
+---
+ src/libretro/Makefile | 2 ++
+ 1 file changed, 2 insertions(+)
+
+diff --git a/src/libretro/Makefile b/src/libretro/Makefile
+index 0c3d874fd3eff74c48dca1952f4f6d82955ce904..94d47c59e79dd4ad7c4f011b45d49f6e14c06e52 100644
+--- a/src/libretro/Makefile
++++ b/src/libretro/Makefile
+@@ -400,6 +400,8 @@ LDFLAGS += $(LIBM)
+ 
+ ifeq ($(DEBUG), 1)
+    COMMON_CFLAGS += -O0 -g -DDEBUG
++else ifeq ($(platform), sf2000)
++   COMMON_CFLAGS += -O3 -DNDEBUG
+ else
+    COMMON_CFLAGS += -O2
+ endif
+
+base-commit: e40256b067fe9de686b9abfba082ed8e0e309f01
+-- 
+2.43.0
+

@@ -44,14 +44,14 @@ CORE_SPECS := \
 	'snes9x2005-prosty|$(CORE_SOURCE_ROOT)/snes9x2005-prosty|https://github.com/tzubertowski/snes9x2005.git|head|fa25aaf57a043e999f1bc3d9327a71c4cdb1d942|fa25aaf57a043e999f1bc3d9327a71c4cdb1d942|patches/snes9x2005-prosty|.' \
 	'snes9x2002-prosty|$(CORE_SOURCE_ROOT)/snes9x2002-prosty|https://github.com/tzubertowski/snes9x2002.git|head|864c7d26b6bc42f7d648d1ba68dfc37520878629|864c7d26b6bc42f7d648d1ba68dfc37520878629|patches/snes9x2002-prosty|.' \
 	'gambatte-prosty|$(CORE_SOURCE_ROOT)/libretro-gambatte-prosty|https://github.com/tzubertowski/libretro-gambatte.git|head|9e8bbe6a9a5e2cb35cfe3a851aaa631a4760f2e3|9e8bbe6a9a5e2cb35cfe3a851aaa631a4760f2e3|patches/gambatte-prosty|.' \
-	'quicknes-prosty|$(CORE_SOURCE_ROOT)/QuickNES_Core-prosty|https://github.com/tzubertowski/QuickNES_Core.git|head|9a6852e768cbabfcaa884f2d69cd8ea8cea37b69|9a6852e768cbabfcaa884f2d69cd8ea8cea37b69|-|.' \
+	'quicknes-prosty|$(CORE_SOURCE_ROOT)/QuickNES_Core-prosty|https://github.com/tzubertowski/QuickNES_Core.git|head|9a6852e768cbabfcaa884f2d69cd8ea8cea37b69|9a6852e768cbabfcaa884f2d69cd8ea8cea37b69|patches/quicknes-prosty|.' \
 	'frodo-prosty|$(CORE_SOURCE_ROOT)/libretro-frodo-prosty|https://github.com/tzubertowski/libretro-frodo.git|head|e2de1193e420f00c3eb65a1182bb31aa58fdfebb|e2de1193e420f00c3eb65a1182bb31aa58fdfebb|patches/frodo-prosty|.' \
 	'fake08-prosty|$(CORE_SOURCE_ROOT)/fake-08-prosty|https://github.com/tzubertowski/fake-08.git|head|b87983eaf7492fdd945f2897024e0bb725e1e15d|b87983eaf7492fdd945f2897024e0bb725e1e15d|patches/fake08-prosty|.' \
 	'bluemsx-prosty|$(CORE_SOURCE_ROOT)/libretro-blueMSX-prosty|https://github.com/tzubertowski/libretro-blueMSX.git|head|0b47ea3e7370bab5766eaa7c470d21247da3764a|0b47ea3e7370bab5766eaa7c470d21247da3764a|patches/bluemsx-prosty|.' \
-	'fceumm-prosty|$(CORE_SOURCE_ROOT)/libretro-fceumm-prosty|https://github.com/tzubertowski/libretro-fceumm.git|head|e6111e684e7a7761f3f1d6c80d0a825e2c8cdc7e|e6111e684e7a7761f3f1d6c80d0a825e2c8cdc7e|-|.' \
+	'fceumm-prosty|$(CORE_SOURCE_ROOT)/libretro-fceumm-prosty|https://github.com/tzubertowski/libretro-fceumm.git|head|e6111e684e7a7761f3f1d6c80d0a825e2c8cdc7e|e6111e684e7a7761f3f1d6c80d0a825e2c8cdc7e|patches/fceumm-prosty|.' \
 	'prboom|$(CORE_SOURCE_ROOT)/libretro-prboom|https://github.com/madcock/libretro-prboom.git|head|288f89dbb5912c5a920b2e3d392a85a8061fc817|288f89dbb5912c5a920b2e3d392a85a8061fc817|patches/prboom|.' \
 	'nxengine|$(CORE_SOURCE_ROOT)/libretro-nxengine|https://github.com/madcock/libretro-nxengine.git|head|34366d14cc8d143df814fc6e6373b4d688ccc9b3|34366d14cc8d143df814fc6e6373b4d688ccc9b3|patches/nxengine|.' \
-	'ecwolf|$(CORE_SOURCE_ROOT)/ecwolf|https://github.com/madcock/ecwolf.git|head|e40256b067fe9de686b9abfba082ed8e0e309f01|e40256b067fe9de686b9abfba082ed8e0e309f01|-|.' \
+	'ecwolf|$(CORE_SOURCE_ROOT)/ecwolf|https://github.com/madcock/ecwolf.git|head|e40256b067fe9de686b9abfba082ed8e0e309f01|e40256b067fe9de686b9abfba082ed8e0e309f01|patches/ecwolf|.' \
 	'butterscotch|$(CORE_SOURCE_ROOT)/butterscotch|https://github.com/tzubertowski/TreeFrogUI_FroggyTale.git|head|c43543e76391396cf2ef40a62b219d6717a24521|c43543e76391396cf2ef40a62b219d6717a24521|patches/butterscotch|.'
 
 # Patch queues for source repositories pinned as submodules by a core fork.
