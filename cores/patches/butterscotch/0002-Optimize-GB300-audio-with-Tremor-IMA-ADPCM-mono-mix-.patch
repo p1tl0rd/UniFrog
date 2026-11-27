@@ -1,0 +1,1394 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: UniFrog CI <ci@unifrog.local>
+Date: Fri, 27 Nov 2026 09:40:50 +0000
+Subject: [PATCH 2/2] Optimize GB300 audio with Tremor, IMA-ADPCM, mono mix,
+ -O3, and FPS sync
+
+---
+ Makefile.unifrog          |    4 +-
+ src/loop.c                |    2 +
+ src/sf2000/sf2000_audio.c | 1035 ++++++++++++++++++++++++++++++++-----
+ src/sf2000/sf2000_audio.h |    1 +
+ src/sf3000/main.c         |   32 +-
+ 5 files changed, 936 insertions(+), 138 deletions(-)
+
+diff --git a/Makefile.unifrog b/Makefile.unifrog
+index e92cadb3273cb672195f0be8af2bae544fbd53e1..483b4d1541200a6b66ab6082bdd83515473602c8 100644
+--- a/Makefile.unifrog
++++ b/Makefile.unifrog
+@@ -10,7 +10,7 @@ LIBRETRO_COMMON_INC ?= ../libretro-common/include
+ CFLAGS := -EL -march=mips32 -mtune=mips32r2 -msoft-float
+ CFLAGS += -G0 -mno-abicalls -fno-pic
+ CFLAGS += -ffunction-sections -fdata-sections
+-CFLAGS += -fno-strict-aliasing -fomit-frame-pointer -O2 -DNDEBUG
++CFLAGS += -fno-strict-aliasing -fomit-frame-pointer -O3 -DNDEBUG
+ 
+ INCLUDES := \
+ 	-I. \
+@@ -35,6 +35,7 @@ DEFINES := \
+ 	-DSF2000 \
+ 	-DPLATFORM_SF3000 \
+ 	-DPLATFORM_UNIFROG \
++	-DUSE_HCRTOS_TREMOR \
+ 	-DENABLE_SW_RENDERER \
+ 	-DENABLE_WAD16 \
+ 	-DDISABLE_WAD14 \
+@@ -65,7 +66,6 @@ SRCS := \
+ 	src/backends/libretro.c \
+ 	src/sf2000/sf2000_audio.c \
+ 	src/sf2000/stb_impl.c \
+-	vendor/stb/vorbis/stb_vorbis.c \
+ 	$(wildcard vendor/bzip2/*.c) \
+ 	$(wildcard vendor/miniz/*.c) \
+ 	vendor/md5/md5.c \
+diff --git a/src/loop.c b/src/loop.c
+index ab6877e8f4f6d1e1e919326161d73318c6e6d213..bb00da435fa83088437d4f08837ef32c12564dfc 100644
+--- a/src/loop.c
++++ b/src/loop.c
+@@ -1128,6 +1128,8 @@ int loop(CommandLineArgs args, const char *argv0) {
+ #endif
+         Runner_initFirstRoom(runner);
+ #ifdef PLATFORM_UNIFROG
++        extern void libretro_set_game_fps(double fps);
++        libretro_set_game_fps(Runner_getEffectiveGameSpeed(runner));
+         libretro_notify_load_ready();
+ #endif
+ 
+diff --git a/src/sf2000/sf2000_audio.c b/src/sf2000/sf2000_audio.c
+index db17ce2d8441b854f393ff84374e595be15f6cdd..050bdf3cf5fdb5579177f9212a316ae6e4f9d23d 100644
+--- a/src/sf2000/sf2000_audio.c
++++ b/src/sf2000/sf2000_audio.c
+@@ -6,9 +6,18 @@
+ #include "stb_ds.h"
+ #include <stdlib.h>
+ #include <string.h>
++#include <strings.h>
+ #include <stdio.h>
+ 
+-/* Forward declarations for stb_vorbis (compiled separately in VENDOR_SRCS) */
++#ifdef USE_HCRTOS_TREMOR
++extern void *vorbis_create(const uint8_t *extradata, int extradata_size);
++extern int vorbis_decode(void *ctx, const uint8_t *packet, int packet_size,
++                         int16_t *pcm_out, int max_shorts,
++                         int *out_rate, int *out_channels);
++extern void vorbis_flush(void *ctx);
++extern void vorbis_destroy(void *ctx);
++#else
++/* Forward declarations for stb_vorbis fallback on host builds */
+ typedef struct stb_vorbis stb_vorbis;
+ typedef struct {
+    char *alloc_buffer;
+@@ -30,19 +39,24 @@ extern stb_vorbis_info stb_vorbis_get_info(stb_vorbis *f);
+ extern int stb_vorbis_get_samples_short_interleaved(stb_vorbis *f, int channels, short *buffer, int num_shorts);
+ extern int stb_vorbis_seek_start(stb_vorbis *f);
+ extern void stb_vorbis_close(stb_vorbis *f);
++#endif
+ 
+-/* SF2000 hardware sample rate */
++/* GB300 / SF2000 hardware sample rate (mono mixed, duplicated to stereo for libretro) */
+ #define SF2000_AUDIO_RATE 22050
+ #define SF2000_AUDIO_CHANNELS 2
+ 
+-/* Distribute the fractional 367.5 samples/frame across alternating frames. */
+-#define MAX_SAMPLES_PER_FRAME ((SF2000_AUDIO_RATE + 59) / 60)
++/* Covers down to 15 FPS (1470 samples/frame); 30 FPS = 735, 60 FPS = 367/368. */
++#define MAX_SAMPLES_PER_FRAME ((SF2000_AUDIO_RATE + 14) / 15)
+ 
+ #define AUDIO_STREAM_INDEX_BASE 300000
+ #define SOUND_INSTANCE_ID_BASE 100000
+ #define MAX_SOUND_INSTANCES 16
+ #define MAX_AUDIO_STREAMS 16
+ 
++#define AUDIO_RAM_PRELOAD_MAX (4u * 1024u * 1024u)
++#define AUDIO_FILE_IOBUF_SIZE (16u * 1024u)
++#define STREAM_SCRATCH_CAP 8192
++
+ static inline uint16_t readU16LE(const uint8_t* p) {
+     return (uint16_t)p[0] | ((uint16_t)p[1] << 8);
+ }
+@@ -51,7 +65,13 @@ static inline uint32_t readU32LE(const uint8_t* p) {
+     return (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
+ }
+ 
+-/* WAV header parser helper */
++static inline int16_t clampS16(int32_t v) {
++    if (v > 32767) return 32767;
++    if (v < -32768) return -32768;
++    return (int16_t)v;
++}
++
++/* Embedded SFX WAV header parser helper */
+ static bool parseWavHeader(const uint8_t* data, uint32_t size,
+                           const uint8_t** outAudioData, uint32_t* outAudioDataLen,
+                           int32_t* outChannels, int32_t* outSampleRate, int32_t* outBitsPerSample) {
+@@ -82,33 +102,639 @@ static bool parseWavHeader(const uint8_t* data, uint32_t size,
+             *outAudioDataLen = chunkLen;
+             break;
+         }
+-        offset += chunkLen;
++        offset += (chunkLen + 1u) & ~1u;
+     }
+     return (*outAudioData != NULL && *outAudioDataLen > 0 &&
+             *outChannels > 0 && *outSampleRate > 0 && *outBitsPerSample == 16);
+ }
+ 
+-static char* resolveAudioPath(FileSystem* fs, const char* filename) {
+-    char* path = fs->vtable->resolvePath(fs, filename);
++static char* tryResolveFile(FileSystem* fs, const char* candidate) {
++    if (!fs || !candidate || !candidate[0]) return NULL;
++    char* path = fs->vtable->resolvePath(fs, candidate);
+     FILE* f = path ? fopen(path, "rb") : NULL;
+-    if (f) { fclose(f); return path; }
++    if (f) {
++        fclose(f);
++        return path;
++    }
+     free(path);
++    return NULL;
++}
+ 
++static char* resolveAudioPath(FileSystem* fs, const char* filename) {
++    if (!fs || !filename || !filename[0]) return NULL;
++
++    size_t n = strlen(filename);
++    const char* dot = strrchr(filename, '.');
++    bool isOgg = (dot && strcasecmp(dot, ".ogg") == 0);
++    bool isMusicDir = (strncmp(filename, "music/", 6) == 0);
+     const char* base = strrchr(filename, '/');
+     base = base ? base + 1 : filename;
+-    size_t n = strlen(base);
+-    if (strncmp(filename, "music/", 6) != 0 || n <= 4 ||
+-        strcasecmp(base + n - 4, ".ogg") != 0) return NULL;
+-    char mapped[512];
+-    int len = snprintf(mapped, sizeof(mapped), "mus_%s", base);
+-    if (len <= 0 || (size_t)len >= sizeof(mapped)) return NULL;
+-    path = fs->vtable->resolvePath(fs, mapped);
+-    f = path ? fopen(path, "rb") : NULL;
+-    if (f) fclose(f);
+-    else { free(path); path = NULL; }
+-    return path;
++
++    /* Prefer pre-converted mono IMA-ADPCM / PCM .wav over .ogg when present */
++    if (isOgg) {
++        char wavCand[512];
++        size_t stemLen = (size_t)(dot - filename);
++        if (stemLen + 5 <= sizeof(wavCand)) {
++            memcpy(wavCand, filename, stemLen);
++            memcpy(wavCand + stemLen, ".wav", 5);
++            char* p = tryResolveFile(fs, wavCand);
++            if (p) return p;
++        }
++        if (isMusicDir) {
++            const char* baseDot = strrchr(base, '.');
++            if (baseDot) {
++                int len = snprintf(wavCand, sizeof(wavCand), "mus_%.*s.wav",
++                                   (int)(baseDot - base), base);
++                if (len > 0 && (size_t)len < sizeof(wavCand)) {
++                    char* p = tryResolveFile(fs, wavCand);
++                    if (p) return p;
++                }
++            }
++        }
++    }
++
++    char* p = tryResolveFile(fs, filename);
++    if (p) return p;
++
++    /* Undertale's GML uses music/name.ogg; its Linux package names these
++     * same tracks mus_name.ogg beside game.unx. */
++    if (isMusicDir && isOgg && n > 4) {
++        char mapped[512];
++        int len = snprintf(mapped, sizeof(mapped), "mus_%s", base);
++        if (len > 0 && (size_t)len < sizeof(mapped)) {
++            p = tryResolveFile(fs, mapped);
++            if (p) return p;
++        }
++    }
++    return NULL;
++}
++
++/* ---------------------------------------------------------------------------
++ * Buffered / RAM-preloaded data source for streamed audio
++ * --------------------------------------------------------------------------- */
++
++typedef struct {
++    const uint8_t* mem;
++    uint32_t memSize;
++    uint32_t memPos;
++    bool ownsMem;
++    FILE* file;
++    char* ioBuf;
++} AudioDataSource;
++
++static bool srcOpenFile(AudioDataSource* src, const char* path) {
++    memset(src, 0, sizeof(*src));
++    if (!path) return false;
++    FILE* f = fopen(path, "rb");
++    if (!f) return false;
++
++    long fileSize = -1;
++    if (fseek(f, 0, SEEK_END) == 0) {
++        fileSize = ftell(f);
++        fseek(f, 0, SEEK_SET);
++    }
++
++    if (fileSize > 0 && (uint32_t)fileSize <= AUDIO_RAM_PRELOAD_MAX) {
++        uint8_t* buf = (uint8_t*)malloc((size_t)fileSize);
++        if (buf) {
++            size_t got = fread(buf, 1, (size_t)fileSize, f);
++            fclose(f);
++            if (got == (size_t)fileSize) {
++                src->mem = buf;
++                src->memSize = (uint32_t)got;
++                src->memPos = 0;
++                src->ownsMem = true;
++                return true;
++            }
++            free(buf);
++            /* Re-open for streaming fallback if fread was short */
++            f = fopen(path, "rb");
++            if (!f) return false;
++        }
++    }
++
++    src->ioBuf = (char*)malloc(AUDIO_FILE_IOBUF_SIZE);
++    if (src->ioBuf) {
++        setvbuf(f, src->ioBuf, _IOFBF, AUDIO_FILE_IOBUF_SIZE);
++    }
++    src->file = f;
++    return true;
++}
++
++static bool srcOpenMemory(AudioDataSource* src, const uint8_t* data, uint32_t size) {
++    memset(src, 0, sizeof(*src));
++    if (!data || size == 0) return false;
++    src->mem = data;
++    src->memSize = size;
++    src->memPos = 0;
++    src->ownsMem = false;
++    return true;
++}
++
++static void srcClose(AudioDataSource* src) {
++    if (src->ownsMem && src->mem) {
++        free((void*)src->mem);
++    }
++    if (src->file) {
++        fclose(src->file);
++    }
++    if (src->ioBuf) {
++        free(src->ioBuf);
++    }
++    memset(src, 0, sizeof(*src));
++}
++
++static size_t srcRead(AudioDataSource* src, void* dst, size_t bytes) {
++    if (src->mem) {
++        uint32_t avail = src->memSize - src->memPos;
++        if (bytes > avail) bytes = avail;
++        if (bytes > 0) {
++            memcpy(dst, src->mem + src->memPos, bytes);
++            src->memPos += (uint32_t)bytes;
++        }
++        return bytes;
++    }
++    if (src->file) {
++        return fread(dst, 1, bytes, src->file);
++    }
++    return 0;
++}
++
++static bool srcSeek(AudioDataSource* src, uint32_t offset) {
++    if (src->mem) {
++        if (offset > src->memSize) offset = src->memSize;
++        src->memPos = offset;
++        return true;
++    }
++    if (src->file) {
++        return fseek(src->file, (long)offset, SEEK_SET) == 0;
++    }
++    return false;
++}
++
++static uint32_t srcTell(const AudioDataSource* src) {
++    if (src->mem) return src->memPos;
++    if (src->file) {
++        long p = ftell(src->file);
++        return p >= 0 ? (uint32_t)p : 0u;
++    }
++    return 0;
++}
++
++/* ---------------------------------------------------------------------------
++ * WAV (PCM & IMA-ADPCM) stream decoder -> mono int16_t
++ * --------------------------------------------------------------------------- */
++
++static const int8_t s_imaIndexTable[16] = {
++    -1, -1, -1, -1, 2, 4, 6, 8,
++    -1, -1, -1, -1, 2, 4, 6, 8
++};
++
++static const int16_t s_imaStepTable[89] = {
++    7, 8, 9, 10, 11, 12, 13, 14, 16, 17,
++    19, 21, 23, 25, 28, 31, 34, 37, 41, 45,
++    50, 55, 60, 66, 73, 80, 88, 97, 107, 118,
++    130, 143, 157, 173, 190, 209, 230, 253, 279, 307,
++    337, 371, 408, 449, 494, 544, 598, 658, 724, 796,
++    876, 963, 1060, 1166, 1282, 1411, 1552, 1707, 1878, 2066,
++    2272, 2499, 2749, 3024, 3327, 3660, 4026, 4428, 4871, 5358,
++    5894, 6484, 7132, 7845, 8630, 9493, 10442, 11487, 12635, 13899,
++    15289, 16818, 18500, 20350, 22385, 24623, 27086, 29794, 32767
++};
++
++static inline int32_t imaStep(uint8_t nibble, int32_t* predictor, int32_t* stepIndex) {
++    int32_t idx = *stepIndex;
++    int32_t step = s_imaStepTable[idx];
++    int32_t diff = step >> 3;
++    if (nibble & 1) diff += step >> 2;
++    if (nibble & 2) diff += step >> 1;
++    if (nibble & 4) diff += step;
++    if (nibble & 8) diff = -diff;
++
++    int32_t pred = *predictor + diff;
++    if (pred > 32767) pred = 32767;
++    else if (pred < -32768) pred = -32768;
++
++    idx += s_imaIndexTable[nibble & 15];
++    if (idx < 0) idx = 0;
++    else if (idx > 88) idx = 88;
++
++    *predictor = pred;
++    *stepIndex = idx;
++    return pred;
++}
++
++typedef struct {
++    uint16_t formatTag;
++    uint16_t channels;
++    uint32_t sampleRate;
++    uint16_t blockAlign;
++    uint16_t bitsPerSample;
++    uint16_t samplesPerBlock;
++    uint32_t dataOffset;
++    uint32_t dataSize;
++    uint32_t bytesRemaining;
++    uint8_t* blockBuf;
++    uint32_t blockBufCap;
++} WavStreamState;
++
++static bool wavStreamOpen(AudioDataSource* src, WavStreamState* wav) {
++    memset(wav, 0, sizeof(*wav));
++    uint8_t riff[12];
++    if (srcRead(src, riff, 12) != 12) return false;
++    if (memcmp(riff, "RIFF", 4) != 0 || memcmp(riff + 8, "WAVE", 4) != 0) return false;
++
++    bool gotFmt = false;
++    bool gotData = false;
++    uint8_t chunkHdr[8];
++    while (srcRead(src, chunkHdr, 8) == 8) {
++        uint32_t chunkLen = readU32LE(chunkHdr + 4);
++        uint32_t bodyPos = srcTell(src);
++
++        if (memcmp(chunkHdr, "fmt ", 4) == 0 && chunkLen >= 16) {
++            uint8_t fmt[40];
++            size_t want = chunkLen < sizeof(fmt) ? chunkLen : sizeof(fmt);
++            if (srcRead(src, fmt, want) != want) return false;
++            wav->formatTag = readU16LE(fmt + 0);
++            wav->channels = readU16LE(fmt + 2);
++            wav->sampleRate = readU32LE(fmt + 4);
++            wav->blockAlign = readU16LE(fmt + 12);
++            wav->bitsPerSample = readU16LE(fmt + 14);
++            if (wav->formatTag == 0x0011 && want >= 20) {
++                wav->samplesPerBlock = readU16LE(fmt + 18);
++            }
++            gotFmt = true;
++        } else if (memcmp(chunkHdr, "data", 4) == 0) {
++            wav->dataOffset = bodyPos;
++            wav->dataSize = chunkLen;
++            wav->bytesRemaining = chunkLen;
++            gotData = true;
++        }
++
++        if (gotFmt && gotData) break;
++        uint32_t nextPos = bodyPos + ((chunkLen + 1u) & ~1u);
++        if (!srcSeek(src, nextPos)) break;
++    }
++
++    if (!gotFmt || !gotData || wav->dataSize == 0 ||
++        (wav->channels != 1 && wav->channels != 2) || wav->sampleRate == 0) {
++        return false;
++    }
++
++    if (wav->formatTag == 1) {
++        if (wav->bitsPerSample != 16) return false;
++        if (wav->blockAlign == 0) wav->blockAlign = (uint16_t)(wav->channels * 2);
++    } else if (wav->formatTag == 0x0011) {
++        if (wav->bitsPerSample != 4 || wav->blockAlign < wav->channels * 4) return false;
++        if (wav->samplesPerBlock == 0) {
++            wav->samplesPerBlock = (uint16_t)(((wav->blockAlign - 4 * wav->channels) * 8) / (4 * wav->channels) + 1);
++        }
++    } else {
++        return false;
++    }
++
++    uint32_t bufNeed = (wav->formatTag == 1) ? 2048u : wav->blockAlign;
++    wav->blockBuf = (uint8_t*)malloc(bufNeed);
++    if (!wav->blockBuf) return false;
++    wav->blockBufCap = bufNeed;
++
++    return srcSeek(src, wav->dataOffset);
++}
++
++static void wavStreamClose(WavStreamState* wav) {
++    free(wav->blockBuf);
++    memset(wav, 0, sizeof(*wav));
++}
++
++static bool wavStreamRewind(AudioDataSource* src, WavStreamState* wav) {
++    wav->bytesRemaining = wav->dataSize;
++    return srcSeek(src, wav->dataOffset);
++}
++
++static int wavStreamDecodeMono(AudioDataSource* src, WavStreamState* wav, int16_t* outMono, int maxOut) {
++    if (wav->bytesRemaining == 0 || maxOut <= 0) return 0;
++
++    if (wav->formatTag == 1) {
++        uint32_t bpf = (uint32_t)wav->channels * 2u;
++        uint32_t wantFrames = (uint32_t)maxOut;
++        uint32_t maxFramesBuf = wav->blockBufCap / bpf;
++        if (wantFrames > maxFramesBuf) wantFrames = maxFramesBuf;
++        uint32_t wantBytes = wantFrames * bpf;
++        if (wantBytes > wav->bytesRemaining) {
++            wantBytes = (wav->bytesRemaining / bpf) * bpf;
++        }
++        if (wantBytes < bpf) {
++            wav->bytesRemaining = 0;
++            return 0;
++        }
++        size_t got = srcRead(src, wav->blockBuf, wantBytes);
++        got -= got % bpf;
++        if (got == 0) {
++            wav->bytesRemaining = 0;
++            return 0;
++        }
++        wav->bytesRemaining -= (uint32_t)got;
++        int frames = (int)(got / bpf);
++        const int16_t* pcm = (const int16_t*)wav->blockBuf;
++        if (wav->channels == 1) {
++            memcpy(outMono, pcm, (size_t)frames * sizeof(int16_t));
++        } else {
++            for (int i = 0; i < frames; i++) {
++                outMono[i] = (int16_t)(((int32_t)pcm[i * 2] + (int32_t)pcm[i * 2 + 1]) >> 1);
++            }
++        }
++        return frames;
++    }
++
++    /* IMA-ADPCM (formatTag == 0x0011) */
++    uint32_t blkSize = wav->blockAlign;
++    if (blkSize > wav->bytesRemaining) blkSize = wav->bytesRemaining;
++    if (blkSize < (uint32_t)wav->channels * 4u) {
++        wav->bytesRemaining = 0;
++        return 0;
++    }
++    size_t got = srcRead(src, wav->blockBuf, blkSize);
++    if (got < (size_t)wav->channels * 4u) {
++        wav->bytesRemaining = 0;
++        return 0;
++    }
++    wav->bytesRemaining -= (uint32_t)got;
++
++    const uint8_t* blk = wav->blockBuf;
++    int outCount = 0;
++    if (wav->channels == 1) {
++        int32_t pred = (int16_t)readU16LE(blk);
++        int32_t idx = blk[2];
++        if (idx > 88) idx = 88;
++        if (outCount < maxOut) outMono[outCount++] = (int16_t)pred;
++        for (size_t i = 4; i < got && outCount < maxOut; i++) {
++            uint8_t b = blk[i];
++            outMono[outCount++] = (int16_t)imaStep(b & 0x0Fu, &pred, &idx);
++            if (outCount < maxOut) {
++                outMono[outCount++] = (int16_t)imaStep((b >> 4) & 0x0Fu, &pred, &idx);
++            }
++        }
++    } else {
++        int32_t predL = (int16_t)readU16LE(blk + 0);
++        int32_t idxL = blk[2];
++        if (idxL > 88) idxL = 88;
++        int32_t predR = (int16_t)readU16LE(blk + 4);
++        int32_t idxR = blk[6];
++        if (idxR > 88) idxR = 88;
++        if (outCount < maxOut) outMono[outCount++] = (int16_t)((predL + predR) >> 1);
++
++        size_t pos = 8;
++        while (pos + 8 <= got && outCount < maxOut) {
++            const uint8_t* bytesL = blk + pos;
++            const uint8_t* bytesR = blk + pos + 4;
++            for (int b = 0; b < 4 && outCount < maxOut; b++) {
++                int32_t l0 = imaStep(bytesL[b] & 0x0Fu, &predL, &idxL);
++                int32_t r0 = imaStep(bytesR[b] & 0x0Fu, &predR, &idxR);
++                outMono[outCount++] = (int16_t)((l0 + r0) >> 1);
++                if (outCount < maxOut) {
++                    int32_t l1 = imaStep((bytesL[b] >> 4) & 0x0Fu, &predL, &idxL);
++                    int32_t r1 = imaStep((bytesR[b] >> 4) & 0x0Fu, &predR, &idxR);
++                    outMono[outCount++] = (int16_t)((l1 + r1) >> 1);
++                }
++            }
++            pos += 8;
++        }
++    }
++    return outCount;
++}
++
++/* ---------------------------------------------------------------------------
++ * Ogg Vorbis decoder via HCRTOS libtremor.a (or stb_vorbis fallback)
++ * --------------------------------------------------------------------------- */
++
++#ifdef USE_HCRTOS_TREMOR
++
++/* Shared static PCM bounce buffer for Tremor decode (keeps 512KB coroutine stack tiny) */
++static int16_t s_vorbisPcmTmp[8192];
++
++typedef struct {
++    void* ctx;
++    uint32_t sampleRate;
++    uint8_t channels;
++
++    /* OggS page/packet state */
++    uint8_t segTable[255];
++    uint8_t nseg;
++    uint8_t segIdx;
++    uint8_t* pageBuf;
++    uint32_t pageBufCap;
++    uint32_t pageBodyOffset;
++    uint32_t currentPageFileOffset;
++
++    uint8_t* pktBuf;
++    uint32_t pktLen;
++    uint32_t pktCap;
++
++    uint32_t audioStartPageOffset;
++    uint8_t audioStartSegIdx;
++} TremorStreamState;
++
++static bool oggReadNextPage(AudioDataSource* src, TremorStreamState* ts) {
++    uint8_t hdr[27];
++    uint32_t pageStart = srcTell(src);
++    if (srcRead(src, hdr, 27) != 27) return false;
++    if (memcmp(hdr, "OggS", 4) != 0) return false;
++
++    uint8_t nseg = hdr[26];
++    if (nseg > 0 && srcRead(src, ts->segTable, nseg) != nseg) return false;
++
++    uint32_t bodyLen = 0;
++    for (uint8_t i = 0; i < nseg; i++) bodyLen += ts->segTable[i];
++
++    if (bodyLen > ts->pageBufCap) {
++        uint8_t* nb = (uint8_t*)realloc(ts->pageBuf, bodyLen);
++        if (!nb) return false;
++        ts->pageBuf = nb;
++        ts->pageBufCap = bodyLen;
++    }
++    if (bodyLen > 0 && srcRead(src, ts->pageBuf, bodyLen) != bodyLen) return false;
++
++    ts->currentPageFileOffset = pageStart;
++    ts->nseg = nseg;
++    ts->segIdx = 0;
++    ts->pageBodyOffset = 0;
++    return true;
++}
++
++static bool oggNextPacket(AudioDataSource* src, TremorStreamState* ts,
++                          const uint8_t** outData, uint32_t* outLen) {
++    ts->pktLen = 0;
++    for (;;) {
++        if (ts->segIdx >= ts->nseg) {
++            if (!oggReadNextPage(src, ts)) return false;
++        }
++        while (ts->segIdx < ts->nseg) {
++            uint8_t seg = ts->segTable[ts->segIdx++];
++            if (ts->pktLen + seg > ts->pktCap) {
++                uint32_t newCap = ts->pktCap ? ts->pktCap * 2u : 4096u;
++                while (newCap < ts->pktLen + seg) newCap *= 2u;
++                uint8_t* nb = (uint8_t*)realloc(ts->pktBuf, newCap);
++                if (!nb) return false;
++                ts->pktBuf = nb;
++                ts->pktCap = newCap;
++            }
++            if (seg > 0) {
++                memcpy(ts->pktBuf + ts->pktLen, ts->pageBuf + ts->pageBodyOffset, seg);
++                ts->pktLen += seg;
++                ts->pageBodyOffset += seg;
++            }
++            if (seg < 255u) {
++                *outData = ts->pktBuf;
++                *outLen = ts->pktLen;
++                return true;
++            }
++        }
++    }
++}
++
++static int xiphLace(uint8_t* dst, int pos, uint32_t val) {
++    while (val >= 255u) {
++        dst[pos++] = 255u;
++        val -= 255u;
++    }
++    dst[pos++] = (uint8_t)val;
++    return pos;
++}
++
++static void tremorStreamClose(TremorStreamState* ts) {
++    if (ts->ctx) {
++        vorbis_destroy(ts->ctx);
++        ts->ctx = NULL;
++    }
++    free(ts->pageBuf);
++    free(ts->pktBuf);
++    memset(ts, 0, sizeof(*ts));
++}
++
++static bool tremorStreamOpen(AudioDataSource* src, TremorStreamState* ts) {
++    memset(ts, 0, sizeof(*ts));
++
++    uint8_t* hdrs[3] = {NULL, NULL, NULL};
++    uint32_t hdrLens[3] = {0, 0, 0};
++
++    for (int i = 0; i < 3; i++) {
++        const uint8_t* pkt = NULL;
++        uint32_t len = 0;
++        if (!oggNextPacket(src, ts, &pkt, &len) || len < 7 || memcmp(pkt + 1, "vorbis", 6) != 0) {
++            goto fail;
++        }
++        if (i == 0) {
++            if (len < 30 || pkt[0] != 1) goto fail;
++            ts->channels = pkt[11];
++            ts->sampleRate = readU32LE(pkt + 12);
++            if (ts->channels == 0 || ts->sampleRate == 0) goto fail;
++        }
++        hdrs[i] = (uint8_t*)malloc(len);
++        if (!hdrs[i]) goto fail;
++        memcpy(hdrs[i], pkt, len);
++        hdrLens[i] = len;
++    }
++
++    if (ts->segIdx < ts->nseg) {
++        ts->audioStartPageOffset = ts->currentPageFileOffset;
++        ts->audioStartSegIdx = ts->segIdx;
++    } else {
++        ts->audioStartPageOffset = srcTell(src);
++        ts->audioStartSegIdx = 0;
++    }
++
++    uint32_t extraCap = 1u + (hdrLens[0] / 255u + 1u) + (hdrLens[1] / 255u + 1u) +
++                        hdrLens[0] + hdrLens[1] + hdrLens[2];
++    uint8_t* extra = (uint8_t*)malloc(extraCap);
++    if (!extra) goto fail;
++    int pos = 0;
++    extra[pos++] = 2u;
++    pos = xiphLace(extra, pos, hdrLens[0]);
++    pos = xiphLace(extra, pos, hdrLens[1]);
++    memcpy(extra + pos, hdrs[0], hdrLens[0]); pos += (int)hdrLens[0];
++    memcpy(extra + pos, hdrs[1], hdrLens[1]); pos += (int)hdrLens[1];
++    memcpy(extra + pos, hdrs[2], hdrLens[2]); pos += (int)hdrLens[2];
++
++    ts->ctx = vorbis_create(extra, pos);
++    free(extra);
++    for (int i = 0; i < 3; i++) free(hdrs[i]);
++    if (!ts->ctx) {
++        tremorStreamClose(ts);
++        return false;
++    }
++    return true;
++
++fail:
++    for (int i = 0; i < 3; i++) free(hdrs[i]);
++    tremorStreamClose(ts);
++    return false;
++}
++
++static bool tremorStreamRewind(AudioDataSource* src, TremorStreamState* ts) {
++    if (!ts->ctx) return false;
++    if (!srcSeek(src, ts->audioStartPageOffset)) return false;
++    ts->nseg = 0;
++    ts->segIdx = 0;
++    ts->pageBodyOffset = 0;
++    if (ts->audioStartSegIdx > 0) {
++        if (!oggReadNextPage(src, ts)) return false;
++        for (uint8_t i = 0; i < ts->audioStartSegIdx && i < ts->nseg; i++) {
++            ts->pageBodyOffset += ts->segTable[i];
++        }
++        ts->segIdx = ts->audioStartSegIdx;
++    }
++    vorbis_flush(ts->ctx);
++    return true;
+ }
+ 
++static int tremorStreamDecodeMono(AudioDataSource* src, TremorStreamState* ts, int16_t* outMono, int maxOut) {
++    if (!ts->ctx || maxOut <= 0) return 0;
++    int errStreak = 0;
++    for (;;) {
++        const uint8_t* pkt = NULL;
++        uint32_t pktLen = 0;
++        if (!oggNextPacket(src, ts, &pkt, &pktLen)) return 0;
++
++        int rate = (int)ts->sampleRate;
++        int ch = (int)ts->channels;
++        int frames = vorbis_decode(ts->ctx, pkt, (int)pktLen, s_vorbisPcmTmp,
++                                   (int)(sizeof(s_vorbisPcmTmp) / sizeof(s_vorbisPcmTmp[0])),
++                                   &rate, &ch);
++        if (frames == -14 || frames == 0) {
++            /* Vorbis overlap-add needs 2 packets before yielding PCM */
++            errStreak = 0;
++            continue;
++        }
++        if (frames < 0) {
++            if (++errStreak >= 16) return 0;
++            continue;
++        }
++        if (frames > maxOut) frames = maxOut;
++        if (ch <= 1) {
++            memcpy(outMono, s_vorbisPcmTmp, (size_t)frames * sizeof(int16_t));
++        } else {
++            for (int i = 0; i < frames; i++) {
++                int idx = i * ch;
++                outMono[i] = (int16_t)(((int32_t)s_vorbisPcmTmp[idx] + (int32_t)s_vorbisPcmTmp[idx + 1]) >> 1);
++            }
++        }
++        return frames;
++    }
++}
++
++#endif /* USE_HCRTOS_TREMOR */
++
++/* ---------------------------------------------------------------------------
++ * AudioSystem state & slots
++ * --------------------------------------------------------------------------- */
++
++typedef enum {
++    STREAM_NONE = 0,
++    STREAM_WAV_FILE,
++    STREAM_OGG_TREMOR,
++    STREAM_OGG_STB
++} StreamKind;
++
+ typedef struct {
+     bool active;
+     char* filePath;
+@@ -125,7 +751,7 @@ typedef struct {
+     float gain;
+     float pitch;
+ 
+-    /* For embedded SFX */
++    /* For embedded PCM SFX */
+     const int16_t* pcmData;
+     uint32_t totalSamples; /* per channel */
+     uint32_t samplePos;
+@@ -133,10 +759,20 @@ typedef struct {
+     int32_t channels;
+     int32_t sampleRate;
+ 
+-    /* For streamed BGM (OGG Vorbis) */
++    /* For streamed BGM / compressed SFX (decoded to mono int16_t) */
+     bool isStream;
+-    stb_vorbis* vorbis;
+-    int16_t streamScratch[4096];
++    bool streamEof;
++    StreamKind streamKind;
++    AudioDataSource src;
++    union {
++        WavStreamState wav;
++#ifdef USE_HCRTOS_TREMOR
++        TremorStreamState tremor;
++#else
++        stb_vorbis* stb;
++#endif
++    } dec;
++    int16_t streamScratch[STREAM_SCRATCH_CAP];
+     int32_t scratchSamples;
+     int32_t scratchPos;
+ } SoundSlot;
+@@ -153,18 +789,153 @@ struct Sf2000AudioSystem {
+ static Sf2000AudioSystem* s_audio = NULL;
+ static uint32_t s_sample_phase;
+ #ifdef PLATFORM_UNIFROG
+-static bool s_bgmEnabled = false;
++static unsigned s_targetFps = 30;
+ #else
+-static bool s_bgmEnabled = true;
++static unsigned s_targetFps = 60;
+ #endif
++static bool s_bgmEnabled = true;
+ 
+ void Sf2000AudioSystem_setBgmEnabled(bool enabled) {
+     s_bgmEnabled = enabled;
+ }
+ 
++void Sf2000AudioSystem_setTargetFps(unsigned fps) {
++    if (fps < 15u) fps = 15u;
++    if (fps > 60u) fps = 60u;
++    s_targetFps = fps;
++    s_sample_phase = 0;
++}
++
+ /* External callback to libretro frontend in main.c */
+ extern void sf2000_send_audio(const int16_t *samples, unsigned frames);
+ 
++static void closeStreamSlot(SoundSlot* slot) {
++    if (!slot) return;
++    if (slot->streamKind == STREAM_WAV_FILE) {
++        wavStreamClose(&slot->dec.wav);
++    }
++#ifdef USE_HCRTOS_TREMOR
++    else if (slot->streamKind == STREAM_OGG_TREMOR) {
++        tremorStreamClose(&slot->dec.tremor);
++    }
++#else
++    else if (slot->streamKind == STREAM_OGG_STB && slot->dec.stb) {
++        stb_vorbis_close(slot->dec.stb);
++        slot->dec.stb = NULL;
++    }
++#endif
++    srcClose(&slot->src);
++    slot->streamKind = STREAM_NONE;
++    slot->isStream = false;
++    slot->streamEof = false;
++    slot->scratchSamples = 0;
++    slot->scratchPos = 0;
++}
++
++static bool openStreamFromFile(SoundSlot* slot, const char* path) {
++    if (!path) return false;
++    if (!srcOpenFile(&slot->src, path)) return false;
++
++    const char* dot = strrchr(path, '.');
++    if (dot && strcasecmp(dot, ".wav") == 0) {
++        if (wavStreamOpen(&slot->src, &slot->dec.wav)) {
++            slot->streamKind = STREAM_WAV_FILE;
++            slot->isStream = true;
++            slot->channels = 1;
++            slot->sampleRate = (int32_t)slot->dec.wav.sampleRate;
++            return true;
++        }
++        srcClose(&slot->src);
++        return false;
++    }
++
++#ifdef USE_HCRTOS_TREMOR
++    if (tremorStreamOpen(&slot->src, &slot->dec.tremor)) {
++        slot->streamKind = STREAM_OGG_TREMOR;
++        slot->isStream = true;
++        slot->channels = 1;
++        slot->sampleRate = (int32_t)slot->dec.tremor.sampleRate;
++        return true;
++    }
++    srcClose(&slot->src);
++    return false;
++#else
++    srcClose(&slot->src);
++    int error = 0;
++    slot->dec.stb = stb_vorbis_open_filename((char*)path, &error, NULL);
++    if (!slot->dec.stb) return false;
++    stb_vorbis_info info = stb_vorbis_get_info(slot->dec.stb);
++    slot->streamKind = STREAM_OGG_STB;
++    slot->isStream = true;
++    slot->channels = 1;
++    slot->sampleRate = (int32_t)info.sample_rate;
++    return true;
++#endif
++}
++
++static bool openOggFromMemory(SoundSlot* slot, const uint8_t* data, uint32_t size) {
++#ifdef USE_HCRTOS_TREMOR
++    if (!srcOpenMemory(&slot->src, data, size)) return false;
++    if (tremorStreamOpen(&slot->src, &slot->dec.tremor)) {
++        slot->streamKind = STREAM_OGG_TREMOR;
++        slot->isStream = true;
++        slot->channels = 1;
++        slot->sampleRate = (int32_t)slot->dec.tremor.sampleRate;
++        return true;
++    }
++    srcClose(&slot->src);
++    return false;
++#else
++    int error = 0;
++    slot->dec.stb = stb_vorbis_open_memory(data, (int)size, &error, NULL);
++    if (!slot->dec.stb) return false;
++    stb_vorbis_info info = stb_vorbis_get_info(slot->dec.stb);
++    slot->streamKind = STREAM_OGG_STB;
++    slot->isStream = true;
++    slot->channels = 1;
++    slot->sampleRate = (int32_t)info.sample_rate;
++    return true;
++#endif
++}
++
++static bool rewindStreamSlot(SoundSlot* slot) {
++    if (slot->streamKind == STREAM_WAV_FILE) {
++        return wavStreamRewind(&slot->src, &slot->dec.wav);
++    }
++#ifdef USE_HCRTOS_TREMOR
++    if (slot->streamKind == STREAM_OGG_TREMOR) {
++        return tremorStreamRewind(&slot->src, &slot->dec.tremor);
++    }
++#else
++    if (slot->streamKind == STREAM_OGG_STB && slot->dec.stb) {
++        return stb_vorbis_seek_start(slot->dec.stb) != 0;
++    }
++#endif
++    return false;
++}
++
++static int decodeStreamPacketMono(SoundSlot* slot, int16_t* dst, int maxOut) {
++    if (slot->streamKind == STREAM_WAV_FILE) {
++        return wavStreamDecodeMono(&slot->src, &slot->dec.wav, dst, maxOut);
++    }
++#ifdef USE_HCRTOS_TREMOR
++    if (slot->streamKind == STREAM_OGG_TREMOR) {
++        return tremorStreamDecodeMono(&slot->src, &slot->dec.tremor, dst, maxOut);
++    }
++#else
++    if (slot->streamKind == STREAM_OGG_STB && slot->dec.stb) {
++        int cap = maxOut > 4096 ? 4096 : maxOut;
++        int16_t tmp[8192];
++        int got = stb_vorbis_get_samples_short_interleaved(slot->dec.stb, 2, tmp, cap * 2);
++        for (int i = 0; i < got; i++) {
++            dst[i] = (int16_t)(((int32_t)tmp[i * 2] + (int32_t)tmp[i * 2 + 1]) >> 1);
++        }
++        return got;
++    }
++#endif
++    return 0;
++}
++
+ static void sf2000AudioInit(AudioSystem* audio, DataWin* dataWin, FileSystem* fileSystem) {
+     Sf2000AudioSystem* sys = (Sf2000AudioSystem*)audio;
+     sys->base.dw = dataWin;
+@@ -175,10 +946,7 @@ static void sf2000AudioInit(AudioSystem* audio, DataWin* dataWin, FileSystem* fi
+ static void sf2000AudioDestroy(AudioSystem* audio) {
+     Sf2000AudioSystem* sys = (Sf2000AudioSystem*)audio;
+     for (int i = 0; i < MAX_SOUND_INSTANCES; i++) {
+-        if (sys->slots[i].isStream && sys->slots[i].vorbis) {
+-            stb_vorbis_close(sys->slots[i].vorbis);
+-            sys->slots[i].vorbis = NULL;
+-        }
++        closeStreamSlot(&sys->slots[i]);
+     }
+     for (int i = 0; i < MAX_AUDIO_STREAMS; i++) {
+         if (sys->streams[i].active && sys->streams[i].filePath) {
+@@ -204,8 +972,6 @@ static int32_t sf2000AudioCreateStream(AudioSystem* audio, const char* filename)
+         if (!sys->streams[i].active) { freeSlot = i; break; }
+     if (freeSlot < 0 || !filename || !sys->fileSystem) return -1;
+ 
+-    /* Undertale's GML uses music/name.ogg; its Linux package names these
+-     * same tracks mus_name.ogg beside game.unx. */
+     char* path = resolveAudioPath(sys->fileSystem, filename);
+     if (!path) return -1;
+     sys->streams[freeSlot].active = true;
+@@ -223,10 +989,7 @@ static bool sf2000AudioDestroyStream(AudioSystem* audio, int32_t streamIndex) {
+ 
+     for (int i = 0; i < MAX_SOUND_INSTANCES; i++) {
+         if (sys->slots[i].active && sys->slots[i].soundIndex == streamIndex) {
+-            if (sys->slots[i].isStream && sys->slots[i].vorbis) {
+-                stb_vorbis_close(sys->slots[i].vorbis);
+-                sys->slots[i].vorbis = NULL;
+-            }
++            closeStreamSlot(&sys->slots[i]);
+             sys->slots[i].active = false;
+         }
+     }
+@@ -278,14 +1041,9 @@ static int32_t sf2000AudioPlaySound(AudioSystem* audio, int32_t soundIndex, int3
+     SoundSlot* slot = findFreeSlot(sys);
+     if (!slot) return -1;
+ 
+-    if (slot->active && slot->isStream && slot->vorbis) {
+-        stb_vorbis_close(slot->vorbis);
+-        slot->vorbis = NULL;
+-    }
++    closeStreamSlot(slot);
+ 
+     slot->active = false;
+-    slot->isStream = false;
+-    slot->vorbis = NULL;
+     slot->pcmData = NULL;
+     slot->paused = false;
+     slot->loop = loop;
+@@ -297,16 +1055,9 @@ static int32_t sf2000AudioPlaySound(AudioSystem* audio, int32_t soundIndex, int3
+     slot->pitch = 1.0f;
+ 
+     if (isStream) {
+-        int error = 0;
+-        slot->vorbis = stb_vorbis_open_filename((char*)streamPath, &error, NULL);
+-        if (!slot->vorbis) return -1;
+-        stb_vorbis_info info = stb_vorbis_get_info(slot->vorbis);
+-        slot->isStream = true;
+-        slot->channels = 2;
+-        slot->sampleRate = (int32_t)info.sample_rate;
++        if (!openStreamFromFile(slot, streamPath)) return -1;
+         slot->gain = sys->streams[soundIndex - AUDIO_STREAM_INDEX_BASE].initialGain;
+         slot->pitch = sys->streams[soundIndex - AUDIO_STREAM_INDEX_BASE].initialPitch;
+-        slot->scratchSamples = slot->scratchPos = 0;
+         slot->active = true;
+         return slot->instanceId;
+     }
+@@ -335,16 +1086,9 @@ static int32_t sf2000AudioPlaySound(AudioSystem* audio, int32_t soundIndex, int3
+                 slot->active = true;
+                 return slot->instanceId;
+             }
+-            int error = 0;
+-            slot->vorbis = stb_vorbis_open_memory(entry->data, (int)entry->dataSize, &error, NULL);
+-            if (slot->vorbis) {
+-                stb_vorbis_info info = stb_vorbis_get_info(slot->vorbis);
+-                slot->isStream = true;
+-                slot->channels = 2;
+-                slot->sampleRate = (int32_t)info.sample_rate;
++            if (openOggFromMemory(slot, entry->data, entry->dataSize)) {
+                 slot->gain = sound->volume;
+                 slot->pitch = sound->pitch;
+-                slot->scratchSamples = slot->scratchPos = 0;
+                 slot->active = true;
+                 return slot->instanceId;
+             }
+@@ -354,21 +1098,24 @@ static int32_t sf2000AudioPlaySound(AudioSystem* audio, int32_t soundIndex, int3
+         char filename[512];
+         const char* file = sound->file;
+         if (!file || !file[0]) return -1;
+-        size_t n = strlen(file);
+-        if (strchr(file, '.')) snprintf(filename, sizeof(filename), "%s", file);
+-        else snprintf(filename, sizeof(filename), "%s.ogg", file);
+-        char* path = resolveAudioPath(sys->fileSystem, filename);
+-        int error = 0;
+-        slot->vorbis = path ? stb_vorbis_open_filename(path, &error, NULL) : NULL;
++
++        char* path = NULL;
++        if (strchr(file, '.')) {
++            snprintf(filename, sizeof(filename), "%s", file);
++            path = resolveAudioPath(sys->fileSystem, filename);
++        } else {
++            snprintf(filename, sizeof(filename), "%s.wav", file);
++            path = resolveAudioPath(sys->fileSystem, filename);
++            if (!path) {
++                snprintf(filename, sizeof(filename), "%s.ogg", file);
++                path = resolveAudioPath(sys->fileSystem, filename);
++            }
++        }
++        bool ok = path ? openStreamFromFile(slot, path) : false;
+         free(path);
+-        if (slot->vorbis) {
+-            stb_vorbis_info info = stb_vorbis_get_info(slot->vorbis);
+-            slot->isStream = true;
+-            slot->channels = 2;
+-            slot->sampleRate = (int32_t)info.sample_rate;
++        if (ok) {
+             slot->gain = sound->volume;
+             slot->pitch = sound->pitch;
+-            slot->scratchSamples = slot->scratchPos = 0;
+             slot->active = true;
+             return slot->instanceId;
+         }
+@@ -382,10 +1129,7 @@ static void sf2000AudioStopSound(AudioSystem* audio, int32_t soundOrInstance) {
+     for (int i = 0; i < MAX_SOUND_INSTANCES; i++) {
+         SoundSlot* slot = &sys->slots[i];
+         if (slot->active && (slot->instanceId == soundOrInstance || slot->soundIndex == soundOrInstance)) {
+-            if (slot->isStream && slot->vorbis) {
+-                stb_vorbis_close(slot->vorbis);
+-                slot->vorbis = NULL;
+-            }
++            closeStreamSlot(slot);
+             slot->active = false;
+         }
+     }
+@@ -396,10 +1140,7 @@ static void sf2000AudioStopAll(AudioSystem* audio) {
+     for (int i = 0; i < MAX_SOUND_INSTANCES; i++) {
+         SoundSlot* slot = &sys->slots[i];
+         if (slot->active) {
+-            if (slot->isStream && slot->vorbis) {
+-                stb_vorbis_close(slot->vorbis);
+-                slot->vorbis = NULL;
+-            }
++            closeStreamSlot(slot);
+             slot->active = false;
+         }
+     }
+@@ -555,14 +1296,14 @@ Sf2000AudioSystem* Sf2000AudioSystem_create(DataWin* dataWin) {
+     return sys;
+ }
+ 
+-/* Mix buffer for 1 video frame */
+-static int32_t s_mixAccum[MAX_SAMPLES_PER_FRAME * SF2000_AUDIO_CHANNELS];
++/* Mono mix accumulator + stereo-duplicated output for libretro */
++static int32_t s_mixAccum[MAX_SAMPLES_PER_FRAME];
+ static int16_t s_mixOut[MAX_SAMPLES_PER_FRAME * SF2000_AUDIO_CHANNELS];
+ 
+ static unsigned samples_this_frame(void) {
+     s_sample_phase += SF2000_AUDIO_RATE;
+-    unsigned samples = s_sample_phase / 60;
+-    s_sample_phase %= 60;
++    unsigned samples = s_sample_phase / s_targetFps;
++    s_sample_phase %= s_targetFps;
+     return samples;
+ }
+ 
+@@ -570,7 +1311,8 @@ void Sf2000AudioSystem_renderFrame(void) {
+     if (!s_audio) return;
+ 
+     unsigned frameSamples = samples_this_frame();
+-    memset(s_mixAccum, 0, sizeof(s_mixAccum));
++    if (frameSamples > MAX_SAMPLES_PER_FRAME) frameSamples = MAX_SAMPLES_PER_FRAME;
++    memset(s_mixAccum, 0, frameSamples * sizeof(s_mixAccum[0]));
+ 
+     for (int i = 0; i < MAX_SOUND_INSTANCES; i++) {
+         SoundSlot* slot = &s_audio->slots[i];
+@@ -581,52 +1323,83 @@ void Sf2000AudioSystem_renderFrame(void) {
+         int32_t gainQ12 = (int32_t)(effectiveGain * 4096.0f);
+         if (gainQ12 <= 0) continue;
+ 
+-        /* Fixed point resampling ratio: (sampleRate * pitch) / 22050 */
+-        uint32_t step = (uint32_t)(((uint64_t)slot->sampleRate * (uint32_t)(slot->pitch * 65536.0f)) / SF2000_AUDIO_RATE);
+-        if (step == 0) step = 65536;
+-
+-        if (slot->isStream && slot->vorbis) {
+-            const int capacity = (int)(sizeof(slot->streamScratch) / sizeof(slot->streamScratch[0]) / 2);
+-            double ratio = (double)slot->sampleRate * slot->pitch / SF2000_AUDIO_RATE;
+-            if (ratio < 0.01) ratio = 1.0;
+-            uint32_t stepStream = (uint32_t)(ratio * 65536.0);
+-            if (!stepStream) stepStream = 1;
+-            uint32_t maxPhase = slot->samplePosFrac + (frameSamples - 1) * stepStream;
+-            int needed = (int)(maxPhase >> 16) + 2;
+-            while (slot->scratchSamples < needed && slot->scratchSamples < capacity) {
+-                int got = stb_vorbis_get_samples_short_interleaved(slot->vorbis, 2,
+-                    slot->streamScratch + slot->scratchSamples * 2,
+-                    (capacity - slot->scratchSamples) * 2);
++        float pitch = slot->pitch;
++        if (pitch < 0.01f) pitch = 1.0f;
++        uint32_t pitchQ16 = (uint32_t)(pitch * 65536.0f);
++        if (pitchQ16 < 656u) pitchQ16 = 656u;
++
++        /* Fixed-point resampling ratio: (sampleRate * pitch) / 22050 */
++        uint32_t step = (uint32_t)(((uint64_t)slot->sampleRate * pitchQ16) / SF2000_AUDIO_RATE);
++        if (step == 0) step = 65536u;
++
++        if (slot->isStream) {
++            int needed = (int)((slot->samplePosFrac + (frameSamples - 1u) * step) >> 16) + 2;
++            if (needed > STREAM_SCRATCH_CAP) needed = STREAM_SCRATCH_CAP;
++
++            int loopRewinds = 0;
++            while (!slot->streamEof && (slot->scratchSamples - slot->scratchPos) < needed) {
++                if (slot->scratchPos > 0) {
++                    int avail = slot->scratchSamples - slot->scratchPos;
++                    if (avail > 0) {
++                        memmove(slot->streamScratch, slot->streamScratch + slot->scratchPos,
++                                (size_t)avail * sizeof(int16_t));
++                    } else {
++                        avail = 0;
++                    }
++                    slot->scratchSamples = avail;
++                    slot->scratchPos = 0;
++                }
++                int space = STREAM_SCRATCH_CAP - slot->scratchSamples;
++                if (space <= 0) break;
++
++                int got = decodeStreamPacketMono(slot, slot->streamScratch + slot->scratchSamples, space);
+                 if (got <= 0) {
+-                    if (slot->loop && stb_vorbis_seek_start(slot->vorbis)) continue;
++                    if (slot->loop && loopRewinds == 0 && rewindStreamSlot(slot)) {
++                        loopRewinds++;
++                        continue;
++                    }
++                    slot->streamEof = true;
+                     break;
+                 }
+                 slot->scratchSamples += got;
++                loopRewinds = 0;
+             }
+-            for (unsigned s = 0; s < frameSamples; s++) {
+-                uint32_t idx = slot->samplePosFrac >> 16;
+-                if ((int)idx >= slot->scratchSamples) break;
+-                uint32_t frac = slot->samplePosFrac & 0xffff;
+-                int next = idx + 1 < (uint32_t)slot->scratchSamples ? (int)idx + 1 : (int)idx;
+-                for (int ch = 0; ch < 2; ch++) {
+-                    int32_t a = slot->streamScratch[idx * 2 + ch];
+-                    int32_t b = slot->streamScratch[next * 2 + ch];
+-                    int32_t sample = a + (int32_t)(((int64_t)(b - a) * frac) >> 16);
+-                    s_mixAccum[s * 2 + ch] += (sample * gainQ12) >> 12;
++
++            int avail = slot->scratchSamples - slot->scratchPos;
++            if (avail > 0) {
++                const int16_t* src = slot->streamScratch + slot->scratchPos;
++                if (step == 65536u && slot->samplePosFrac == 0u) {
++                    unsigned n = frameSamples < (unsigned)avail ? frameSamples : (unsigned)avail;
++                    for (unsigned s = 0; s < n; s++) {
++                        s_mixAccum[s] += ((int32_t)src[s] * gainQ12) >> 12;
++                    }
++                    slot->scratchPos += (int32_t)n;
++                } else {
++                    uint32_t posFrac = slot->samplePosFrac;
++                    for (unsigned s = 0; s < frameSamples; s++) {
++                        uint32_t idx = posFrac >> 16;
++                        if ((int)idx >= avail) break;
++                        int32_t a = src[idx];
++                        int32_t b = ((int)idx + 1 < avail) ? src[idx + 1] : a;
++                        int32_t frac15 = (int32_t)((posFrac & 0xffffu) >> 1);
++                        int32_t sample = a + (((b - a) * frac15) >> 15);
++                        s_mixAccum[s] += (sample * gainQ12) >> 12;
++                        posFrac += step;
++                    }
++                    int consumed = (int)(posFrac >> 16);
++                    if (consumed > avail) consumed = avail;
++                    slot->scratchPos += consumed;
++                    slot->samplePosFrac = posFrac & 0xffffu;
+                 }
+-                slot->samplePosFrac += stepStream;
+             }
+-            int consumed = (int)(slot->samplePosFrac >> 16);
+-            if (consumed > slot->scratchSamples) consumed = slot->scratchSamples;
+-            slot->scratchSamples -= consumed;
+-            slot->samplePosFrac &= 0xffff;
+-            if (consumed && slot->scratchSamples)
+-                memmove(slot->streamScratch, slot->streamScratch + consumed * 2,
+-                    (size_t)slot->scratchSamples * 2 * sizeof(int16_t));
+-            if (slot->scratchSamples == 0 && !slot->loop && consumed == 0)
++
++            if (slot->streamEof && slot->scratchPos >= slot->scratchSamples && !slot->loop) {
++                closeStreamSlot(slot);
+                 slot->active = false;
++            }
+             continue;
+         }
++
+         if (!slot->pcmData) continue;
+         for (unsigned s = 0; s < frameSamples; s++) {
+             if (slot->samplePos >= slot->totalSamples) {
+@@ -638,29 +1411,27 @@ void Sf2000AudioSystem_renderFrame(void) {
+                 }
+             }
+ 
+-            int16_t left, right;
++            int32_t mono;
+             if (slot->channels == 1) {
+-                left = right = slot->pcmData[slot->samplePos];
++                mono = slot->pcmData[slot->samplePos];
+             } else {
+-                left  = slot->pcmData[slot->samplePos * 2];
+-                right = slot->pcmData[slot->samplePos * 2 + 1];
++                uint32_t idx = slot->samplePos * 2u;
++                mono = ((int32_t)slot->pcmData[idx] + (int32_t)slot->pcmData[idx + 1]) >> 1;
+             }
+ 
+-            s_mixAccum[s * 2]     += (left * gainQ12) >> 12;
+-            s_mixAccum[s * 2 + 1] += (right * gainQ12) >> 12;
++            s_mixAccum[s] += (mono * gainQ12) >> 12;
+ 
+             slot->samplePosFrac += step;
+             slot->samplePos += (slot->samplePosFrac >> 16);
+-            slot->samplePosFrac &= 0xFFFF;
++            slot->samplePosFrac &= 0xFFFFu;
+         }
+     }
+ 
+-    /* Clamp to 16-bit PCM and send to frontend */
+-    for (unsigned i = 0; i < frameSamples * SF2000_AUDIO_CHANNELS; i++) {
+-        int32_t val = s_mixAccum[i];
+-        if (val > 32767) val = 32767;
+-        else if (val < -32768) val = -32768;
+-        s_mixOut[i] = (int16_t)val;
++    /* Clamp to 16-bit mono PCM and duplicate to stereo for libretro */
++    for (unsigned i = 0; i < frameSamples; i++) {
++        int16_t out = clampS16(s_mixAccum[i]);
++        s_mixOut[i * 2] = out;
++        s_mixOut[i * 2 + 1] = out;
+     }
+ 
+     sf2000_send_audio(s_mixOut, frameSamples);
+diff --git a/src/sf2000/sf2000_audio.h b/src/sf2000/sf2000_audio.h
+index 28a732d93edfaed569efdfd1da10b21def4ef463..bed28cf4bcba4b7770cc04912d1ba253af6d3664 100644
+--- a/src/sf2000/sf2000_audio.h
++++ b/src/sf2000/sf2000_audio.h
+@@ -10,5 +10,6 @@ typedef struct Sf2000AudioSystem Sf2000AudioSystem;
+ Sf2000AudioSystem* Sf2000AudioSystem_create(DataWin* dataWin);
+ void Sf2000AudioSystem_renderFrame(void);
+ void Sf2000AudioSystem_setBgmEnabled(bool enabled);
++void Sf2000AudioSystem_setTargetFps(unsigned fps);
+ 
+ #endif /* _BS_SF2000_AUDIO_H_ */
+diff --git a/src/sf3000/main.c b/src/sf3000/main.c
+index a23cf074b12fac515b033d702003a2410e8de1cb..2fd0b3d80370e8195d11f58ecdf8cea9092007dd 100644
+--- a/src/sf3000/main.c
++++ b/src/sf3000/main.c
+@@ -20,11 +20,15 @@ static retro_input_state_t input_state_cb;
+ static char data_path[1024], save_path[1024];
+ static bool loaded, started, load_ready, game_exited, exit_requested;
+ static cothread_t frontend_thread, game_thread;
++static unsigned game_fps = 30;
++static unsigned render_width = WIDTH;
++static unsigned render_height = HEIGHT;
+ 
+ static const struct retro_variable core_vars[] = {
+-    { "butterscotch_bgm", "Background Music (OGG); disabled|enabled" },
++    { "butterscotch_bgm", "Background Music; enabled|disabled" },
+     { "butterscotch_texture_cache", "Texture Cache (MB); 12|8|16|4" },
+     { "butterscotch_bilinear", "Bilinear Filter; disabled|enabled" },
++    { "butterscotch_render_scale", "Render Scale (%); 100|75|50" },
+     { NULL, NULL }
+ };
+ 
+@@ -71,8 +75,8 @@ void retro_get_system_info(struct retro_system_info *info) {
+ 
+ void retro_get_system_av_info(struct retro_system_av_info *info) {
+     memset(info, 0, sizeof(*info));
+-    info->geometry = (struct retro_game_geometry){WIDTH, HEIGHT, WIDTH, HEIGHT, 4.0f / 3.0f};
+-    info->timing = (struct retro_system_timing){60.0, 22050.0};
++    info->geometry = (struct retro_game_geometry){render_width, render_height, WIDTH, HEIGHT, 4.0f / 3.0f};
++    info->timing = (struct retro_system_timing){(double)game_fps, 22050.0};
+ }
+ 
+ static void game_main(void) {
+@@ -154,6 +158,8 @@ bool retro_load_game(const struct retro_game_info *info) {
+ 
+     int cache_mb = 12;
+     bool bilinear = false;
++    render_width = WIDTH;
++    render_height = HEIGHT;
+     struct retro_variable var = {0};
+     var.key = "butterscotch_texture_cache";
+     if (environment_cb && environment_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value) {
+@@ -165,9 +171,16 @@ bool retro_load_game(const struct retro_game_info *info) {
+     if (environment_cb && environment_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value) {
+         bilinear = (strcmp(var.value, "enabled") == 0);
+     }
++    var.key = "butterscotch_render_scale";
++    var.value = NULL;
++    if (environment_cb && environment_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value) {
++        int scale = atoi(var.value);
++        if (scale == 75) { render_width = 240; render_height = 180; }
++        else if (scale == 50) { render_width = 160; render_height = 120; }
++    }
+     update_runtime_options();
+ 
+-    SwRendererConfig config = {WIDTH, HEIGHT, cache_mb * 1024 * 1024, bilinear, false};
++    SwRendererConfig config = {render_width, render_height, cache_mb * 1024 * 1024, bilinear, false};
+     SwRenderer_setConfig(&config);
+     SwRenderer_setAssetDir(data_dir);
+ 
+@@ -237,6 +250,17 @@ int16_t libretro_input(unsigned id) {
+ 
+ void libretro_yield_frame(void) { co_switch(frontend_thread); }
+ 
++void libretro_set_game_fps(double fps) {
++    unsigned clamped = 30;
++    if (fps > 0.0) {
++        clamped = (unsigned)(fps + 0.5);
++        if (clamped < 15u) clamped = 15u;
++        if (clamped > 60u) clamped = 60u;
++    }
++    game_fps = clamped;
++    Sf2000AudioSystem_setTargetFps(game_fps);
++}
++
+ void libretro_notify_load_ready(void) {
+     load_ready = true;
+     co_switch(frontend_thread);
+-- 
+2.43.0
+

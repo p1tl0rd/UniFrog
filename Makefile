@@ -510,6 +510,7 @@ JS2300_CORE_LIB := $(BUILD)/core_modules/js2300_libretro_core.a
 JS2300_CORE_SUPPORT_LIBS := $(LIBJS2300)
 JS2300_CORE_OBJECTS := $(BUILD)/core_modules/js2300_libretro_core.o
 NXENGINE_CORE_WHOLE_ARCHIVE := 1
+BUTTERSCOTCH_CORE_SUPPORT_LIBS := $(SDK)/lib/plugins/audio/libtremor.a
 EFFECTIVE_CORE_IDS := $(strip $(if $(CORE_IDS),$(CORE_IDS),$(if $(filter 1,$(CORE_BATCH_FAST)),$(FAST_CORE_IDS),$(LIBRETRO_CORE_IDS))))
 SELECTED_CORE_LICENSE_SPECS := $(foreach spec,$(CORE_LICENSE_SPECS),$(if $(filter $(word 1,$(subst |, ,$(spec))),$(EFFECTIVE_CORE_IDS)),$(spec)))
 SELECTED_CORE_LICENSE_FILES := $(foreach spec,$(SELECTED_CORE_LICENSE_SPECS),$(word 2,$(subst |, ,$(spec))))
