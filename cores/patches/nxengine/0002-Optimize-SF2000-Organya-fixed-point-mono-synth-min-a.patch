@@ -1,0 +1,146 @@
+From d652c7318be3075cd78971ace15b6a3afef2f192 Mon Sep 17 00:00:00 2001
+From: UniFrog CI <ci@unifrog.local>
+Date: Fri, 27 Nov 2026 10:45:01 +0000
+Subject: [PATCH] Optimize SF2000 Organya fixed-point mono synth, min audio
+ buffer, and 50Hz default
+
+---
+ Makefile                       |  1 +
+ nxengine/libretro/libretro.cpp |  4 ++
+ nxengine/sound/org.cpp         | 71 ++++++++++++++++++++++++++++++++++
+ 3 files changed, 76 insertions(+)
+
+diff --git a/Makefile b/Makefile
+index 12df6ad..df2450d 100644
+--- a/Makefile
++++ b/Makefile
+@@ -347,6 +347,7 @@ else ifeq ($(platform), sf2000)
+     CXXFLAGS=$(CFLAGS)
+     STATIC_LINKING = 1
+     FRONTEND_SUPPORTS_RGB565 = 1
++    MIN_AUDIO_PROCESSING_PER_FRAME = 1
+     SINGLE_PRECISION_FLOATS = 1
+ 	
+ #MIYOO
+diff --git a/nxengine/libretro/libretro.cpp b/nxengine/libretro/libretro.cpp
+index 4677fff..a1e569a 100644
+--- a/nxengine/libretro/libretro.cpp
++++ b/nxengine/libretro/libretro.cpp
+@@ -37,7 +37,11 @@ extern "C" bool libretro_supports_bitmasks = false;
+ 
+ static unsigned g_frame_cnt;
+ 
++#ifdef SF2000
++bool retro_60hz = false;
++#else
+ bool retro_60hz = true;
++#endif
+ unsigned pitch;
+ 
+ extern bool pre_main(void);
+diff --git a/nxengine/sound/org.cpp b/nxengine/sound/org.cpp
+index 9dc928f..07f6792 100644
+--- a/nxengine/sound/org.cpp
++++ b/nxengine/sound/org.cpp
+@@ -565,6 +565,36 @@ static void note_open(stNoteChannel *chan, int wave, int pitch, int note)
+ // panning, and pitch settings, and at the note & wave spec'd in note_open.
+ static void note_gen(stNoteChannel *chan, int num_samples)
+ {
++#ifdef SF2000
++   int i;
++   int wave = chan->wave;
++   int32_t pan = chan->panning;
++   if (pan < 0) pan = 0;
++   if (pan > ORG_PAN_FULL_RIGHT) pan = ORG_PAN_FULL_RIGHT;
++   int32_t pan_sum = (pan <= ORG_PAN_CENTERED) ? (ORG_PAN_CENTERED + pan) : (ORG_PAN_FULL_RIGHT + ORG_PAN_CENTERED - pan);
++   int32_t gain_q15 = ((int32_t)chan->volume * pan_sum * 32768) / (ORG_MAX_VOLUME * (ORG_PAN_CENTERED * 2));
++   uint32_t phase_q16 = (uint32_t)(chan->phaseacc * 65536.0f) & 0x00FFFFFFu;
++   uint32_t inc_q16 = (uint32_t)(chan->sample_inc * 65536.0f);
++   signed short *outbuf = &chan->outbuffer[chan->outpos];
++   const signed short *wt = wavetable[wave];
++
++   for (i = 0; i < num_samples; i++)
++   {
++      uint32_t pos1 = (phase_q16 >> 16) & 0xFFu;
++      uint32_t pos2 = (pos1 + 1u) & 0xFFu;
++      int32_t frac15 = (int32_t)((phase_q16 & 0xFFFFu) >> 1);
++      int32_t s1 = wt[pos1];
++      int32_t s2 = wt[pos2];
++      int32_t sample = s1 + (((s2 - s1) * frac15) >> 15);
++      int16_t out = (int16_t)((sample * gain_q15) >> 15);
++      *outbuf++ = out;
++      *outbuf++ = out;
++      phase_q16 = (phase_q16 + inc_q16) & 0x00FFFFFFu;
++   }
++   chan->outpos += num_samples * 2;
++   chan->samples_so_far += num_samples;
++   chan->phaseacc = (float_type)phase_q16 * (1.0f / 65536.0f);
++#else
+    int i;
+    float_type audioval;
+    float_type master_volume_ratio, volume_left_ratio, volume_right_ratio;
+@@ -598,6 +628,7 @@ static void note_gen(stNoteChannel *chan, int num_samples)
+       chan->phaseacc += chan->sample_inc;
+       if ((int)chan->phaseacc >= 256) chan->phaseacc -= 256;
+    }
++#endif
+ }
+ 
+ 
+@@ -658,6 +689,45 @@ static int drum_open(int m_channel, int wave, int note)
+ // buffer of the channel.
+ static void drum_gen(int m_channel, int num_samples)
+ {
++#ifdef SF2000
++   stNoteChannel *chan = &note_channel[m_channel];
++   int wave = chan->wave;
++   int nsamples = drumtable[wave].nsamples;
++   const signed short *dsamples = drumtable[wave].samples;
++   if (!dsamples || nsamples <= 0) return;
++
++   int32_t pan = chan->panning;
++   if (pan < 0) pan = 0;
++   if (pan > ORG_PAN_FULL_RIGHT) pan = ORG_PAN_FULL_RIGHT;
++   int32_t pan_sum = (pan <= ORG_PAN_CENTERED) ? (ORG_PAN_CENTERED + pan) : (ORG_PAN_FULL_RIGHT + ORG_PAN_CENTERED - pan);
++   int32_t gain_q15 = ((int32_t)chan->volume * pan_sum * 32768) / (ORG_MAX_VOLUME * (ORG_PAN_CENTERED * 2));
++   uint32_t phase_q16 = (uint32_t)(chan->phaseacc * 65536.0f);
++   uint32_t inc_q16 = (uint32_t)(chan->sample_inc * 65536.0f);
++   signed short *outbuf = &chan->outbuffer[chan->outpos];
++   int generated = 0;
++
++   for (int i = 0; i < num_samples; i++)
++   {
++      int pos1 = (int)(phase_q16 >> 16);
++      if (pos1 >= nsamples)
++         break;
++      int pos2 = (pos1 + 1 < nsamples) ? (pos1 + 1) : pos1;
++      int32_t frac15 = (int32_t)((phase_q16 & 0xFFFFu) >> 1);
++      int32_t s1 = dsamples[pos1];
++      int32_t s2 = dsamples[pos2];
++      int32_t sample = s1 + (((s2 - s1) * frac15) >> 15);
++      int16_t out = (int16_t)((sample * gain_q15) >> 15);
++      *outbuf++ = out;
++      *outbuf++ = out;
++      generated++;
++      phase_q16 += inc_q16;
++      if ((int)(phase_q16 >> 16) > nsamples)
++         break;
++   }
++   chan->outpos += generated * 2;
++   chan->samples_so_far += generated;
++   chan->phaseacc = (float_type)phase_q16 * (1.0f / 65536.0f);
++#else
+    stNoteChannel *chan = &note_channel[m_channel];
+    int pos1, pos2;
+    float_type iratio;
+@@ -688,6 +758,7 @@ static void drum_gen(int m_channel, int num_samples)
+       if ((int)chan->phaseacc > drumtable[wave].nsamples)
+          break;
+    }
++#endif
+ }
+ 
+ 
+-- 
+2.43.0
+

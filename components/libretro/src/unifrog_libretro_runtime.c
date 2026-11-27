@@ -1517,6 +1517,56 @@ static bool host_get_variable(struct retro_variable *var)
          return true;
       }
    }
+   if (host.core_id && strcmp(host.core_id, "pce-fast") == 0) {
+      if (strcmp(var->key, "pce_fast_frameskip") == 0) {
+         if ((host.fast_forward && host.fast_forward_multiplier > 1) ||
+             host.options.frameskip == UNIFROG_LIBRETRO_FRAMESKIP_AUTO ||
+             host.options.frameskip == UNIFROG_LIBRETRO_FRAMESKIP_FIXED_1 ||
+             host.options.frameskip == UNIFROG_LIBRETRO_FRAMESKIP_FIXED_2)
+            var->value = "manual";
+         else
+            var->value = "disabled";
+         printf("unifrog libretro variable %s=%s\n", var->key, var->value);
+         return true;
+      }
+      if (strcmp(var->key, "pce_fast_frameskip_threshold") == 0) {
+         if ((host.fast_forward && host.fast_forward_multiplier > 1) ||
+             host.options.frameskip == UNIFROG_LIBRETRO_FRAMESKIP_FIXED_2)
+            var->value = "60";
+         else if (host.options.frameskip == UNIFROG_LIBRETRO_FRAMESKIP_AUTO ||
+                  host.options.frameskip == UNIFROG_LIBRETRO_FRAMESKIP_FIXED_1)
+            var->value = "50";
+         else
+            var->value = "33";
+         printf("unifrog libretro variable %s=%s\n", var->key, var->value);
+         return true;
+      }
+   }
+   if (host.core_id && strcmp(host.core_id, "race") == 0) {
+      if (strcmp(var->key, "race_frameskip") == 0) {
+         if ((host.fast_forward && host.fast_forward_multiplier > 1) ||
+             host.options.frameskip == UNIFROG_LIBRETRO_FRAMESKIP_AUTO ||
+             host.options.frameskip == UNIFROG_LIBRETRO_FRAMESKIP_FIXED_1 ||
+             host.options.frameskip == UNIFROG_LIBRETRO_FRAMESKIP_FIXED_2)
+            var->value = "manual";
+         else
+            var->value = "disabled";
+         printf("unifrog libretro variable %s=%s\n", var->key, var->value);
+         return true;
+      }
+      if (strcmp(var->key, "race_frameskip_threshold") == 0) {
+         if ((host.fast_forward && host.fast_forward_multiplier > 1) ||
+             host.options.frameskip == UNIFROG_LIBRETRO_FRAMESKIP_FIXED_2)
+            var->value = "60";
+         else if (host.options.frameskip == UNIFROG_LIBRETRO_FRAMESKIP_AUTO ||
+                  host.options.frameskip == UNIFROG_LIBRETRO_FRAMESKIP_FIXED_1)
+            var->value = "50";
+         else
+            var->value = "33";
+         printf("unifrog libretro variable %s=%s\n", var->key, var->value);
+         return true;
+      }
+   }
 
    option_index = core_option_find(var->key);
    if (option_index >= 0) {

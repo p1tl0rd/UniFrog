@@ -1,0 +1,96 @@
+From ddb7050720b9d18a647f22e68befb5b0ef65f9d0 Mon Sep 17 00:00:00 2001
+From: UniFrog CI <ci@unifrog.local>
+Date: Fri, 27 Nov 2026 10:45:01 +0000
+Subject: [PATCH] Optimize SF2000 default 35fps, omit-frame-pointer, and mono
+ SFX mix
+
+---
+ Makefile                  |  2 +-
+ libretro/libretro_sound.c | 28 +++++++++++-----------------
+ src/m_misc.c              |  4 ++++
+ 3 files changed, 16 insertions(+), 18 deletions(-)
+
+diff --git a/Makefile b/Makefile
+index cac88ef..7867b14 100644
+--- a/Makefile
++++ b/Makefile
+@@ -289,7 +289,7 @@ else ifeq ($(platform), sf2000)
+ 	CC = $(MIPS)gcc
+ 	CXX = $(MIPS)g++
+ 	AR = $(MIPS)ar
+-	CFLAGS =-EL -march=mips32 -mtune=mips32 -msoft-float -ffast-math
++	CFLAGS =-EL -march=mips32 -mtune=mips32 -msoft-float -ffast-math -fomit-frame-pointer
+ 	CFLAGS+=-G0 -mno-abicalls -fno-pic -ffunction-sections -fdata-sections
+ 	# -ffreestanding
+ 	CFLAGS+=-I../..
+diff --git a/libretro/libretro_sound.c b/libretro/libretro_sound.c
+index afd4795..4393359 100644
+--- a/libretro/libretro_sound.c
++++ b/libretro/libretro_sound.c
+@@ -492,8 +492,8 @@ void I_UpdateSound(void)
+          while (leftout < leftend)
+          {
+             int a;
+-            dl = mad_audio_buf[frames * 2 + 0];
+-            dr = mad_audio_buf[frames * 2 + 1];
++            int32_t m = ((int32_t)mad_audio_buf[frames * 2 + 0] +
++                         (int32_t)mad_audio_buf[frames * 2 + 1]) >> 1;
+ 
+             for (a = 0; a < nactive; a++)
+             {
+@@ -501,27 +501,21 @@ void I_UpdateSound(void)
+                if (channels[chan].snd_start_ptr)
+                {
+                   sample = *channels[chan].snd_start_ptr;
+-                  dl += channels[chan].leftvol[sample];
+-                  dr += channels[chan].rightvol[sample];
++                  m += (channels[chan].leftvol[sample] +
++                        channels[chan].rightvol[sample]) >> 1;
+                   channels[chan].snd_start_ptr++;
+                   if (!(channels[chan].snd_start_ptr < channels[chan].snd_end_ptr))
+                      memset(&channels[chan], 0, sizeof(channel_t));
+                }
+             }
+ 
+-            if (dl > 0x7fff)
+-               *leftout = 0x7fff;
+-            else if (dl < -0x8000)
+-               *leftout = -0x8000;
+-            else
+-               *leftout = dl;
+-
+-            if (dr > 0x7fff)
+-               *rightout = 0x7fff;
+-            else if (dr < -0x8000)
+-               *rightout = -0x8000;
+-            else
+-               *rightout = dr;
++            if (m > 0x7fff)
++               m = 0x7fff;
++            else if (m < -0x8000)
++               m = -0x8000;
++
++            *leftout = (int16_t)m;
++            *rightout = (int16_t)m;
+ 
+             leftout += step;
+             rightout += step;
+diff --git a/src/m_misc.c b/src/m_misc.c
+index a51d63c..acca7c4 100644
+--- a/src/m_misc.c
++++ b/src/m_misc.c
+@@ -313,7 +313,11 @@ default_t defaults[] =
+    def_int,ss_none, NULL, NULL},
+   {"usegamma",{&usegamma, NULL},{0, NULL},0,4, //jff 3/6/98 fix erroneous upper limit in range
+    def_int,ss_gen, NULL, NULL}, // gamma correction level // killough 1/18/98
++#ifdef SF2000
++  {"uncapped_framerate", {&movement_smooth, NULL},  {0, NULL},0,16,
++#else
+   {"uncapped_framerate", {&movement_smooth, NULL},  {3, NULL},0,16,
++#endif
+    def_int,ss_gen, NULL, NULL},
+   {"filter_wall",{(int*)&drawvars.filterwall, NULL},{RDRAW_FILTER_POINT, NULL},
+    RDRAW_FILTER_POINT, RDRAW_FILTER_ROUNDED, def_int,ss_gen, NULL, NULL},
+-- 
+2.43.0
+
