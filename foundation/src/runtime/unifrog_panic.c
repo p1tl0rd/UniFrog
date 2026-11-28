@@ -107,20 +107,25 @@ static void wait_for_start_reset(uint32_t timeout_ms)
    }
 }
 
-void unifrog_panic_screen(const char *title, uint32_t a, uint32_t b,
-   uint32_t c, uint32_t d)
-{
-   (void)draw_panic_screen(title, "A", a, "B", b, "C", c, "D", d);
-   wait_for_start_reset(5000u);
-}
-
 void unifrog_panic_screen_labeled(const char *title, const char *label0,
    uint32_t value0, const char *label1, uint32_t value1,
    const char *label2, uint32_t value2, const char *label3, uint32_t value3)
 {
+   unifrog_log("unifrog panic title=%s %s=0x%08lx %s=0x%08lx %s=0x%08lx %s=0x%08lx\n",
+      title ? title : "UNIFROG PANIC",
+      label0 ? label0 : "A", (unsigned long)value0,
+      label1 ? label1 : "B", (unsigned long)value1,
+      label2 ? label2 : "C", (unsigned long)value2,
+      label3 ? label3 : "D", (unsigned long)value3);
    (void)draw_panic_screen(title, label0, value0, label1, value1, label2,
       value2, label3, value3);
    wait_for_start_reset(5000u);
+}
+
+void unifrog_panic_screen(const char *title, uint32_t a, uint32_t b,
+   uint32_t c, uint32_t d)
+{
+   unifrog_panic_screen_labeled(title, "A", a, "B", b, "C", c, "D", d);
 }
 
 void unifrog_exception_panic(uint32_t cause, uint32_t epc, uint32_t badvaddr,

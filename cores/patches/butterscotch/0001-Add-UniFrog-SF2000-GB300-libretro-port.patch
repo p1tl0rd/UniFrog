@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: UniFrog Builder <unifrog@local>
 Date: Wed, 25 Nov 2026 22:53:09 +0700
-Subject: [PATCH 1/2] Add UniFrog SF2000/GB300 libretro port
+Subject: [PATCH 1/5] Add UniFrog SF2000/GB300 libretro port
 
 ---
  Makefile.unifrog              |  90 +++++++++++++++++++++

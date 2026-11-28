@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: UniFrog CI <ci@unifrog.local>
 Date: Fri, 27 Nov 2026 11:18:10 +0000
-Subject: [PATCH 3/3] Optimize sw_renderer and precise collision hot paths
+Subject: [PATCH 3/5] Optimize sw_renderer and precise collision hot paths
 
 ---
  src/collision.h               | 124 +++++++++++++--

@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: UniFrog CI <ci@unifrog.local>
 Date: Fri, 27 Nov 2026 09:40:50 +0000
-Subject: [PATCH 2/2] Optimize GB300 audio with Tremor, IMA-ADPCM, mono mix,
+Subject: [PATCH 2/5] Optimize GB300 audio with Tremor, IMA-ADPCM, mono mix,
  -O3, and FPS sync
 
 ---

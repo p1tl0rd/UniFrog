@@ -1,0 +1,889 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: UniFrog CI <ci@unifrog.local>
+Date: Sat, 28 Nov 2026 00:26:35 +0700
+Subject: [PATCH 4/5] Optimize atlas cache, sw_renderer culling/blending,
+ spatial grid, and float RValue
+
+---
+ Makefile.unifrog              |   2 +
+ src/collision.h               |  46 +++---
+ src/runner.c                  |   4 +-
+ src/sf2000/sf2000_audio.c     |   9 ++
+ src/spatial_grid.c            |  33 +++--
+ src/spatial_grid.h            |   9 +-
+ src/sw_renderer/atlas.c       |  65 +++++----
+ src/sw_renderer/atlas.h       |   2 +
+ src/sw_renderer/sw_renderer.c | 260 +++++++++++++++++++++++++++-------
+ src/vm.c                      |  30 +++-
+ src/vm.h                      |   2 +-
+ 11 files changed, 342 insertions(+), 120 deletions(-)
+
+diff --git a/Makefile.unifrog b/Makefile.unifrog
+index 483b4d1541200a6b66ab6082bdd83515473602c8..c9c502f16cdfd4052968ce27e75cda0d056c9898 100644
+--- a/Makefile.unifrog
++++ b/Makefile.unifrog
+@@ -36,6 +36,8 @@ DEFINES := \
+ 	-DPLATFORM_SF3000 \
+ 	-DPLATFORM_UNIFROG \
+ 	-DUSE_HCRTOS_TREMOR \
++	-DUSE_FLOAT_REALS \
++	-DNO_RVALUE_INT64 \
+ 	-DENABLE_SW_RENDERER \
+ 	-DENABLE_WAD16 \
+ 	-DDISABLE_WAD14 \
+diff --git a/src/collision.h b/src/collision.h
+index 832b42536dc7807508033bd7e0aa977b748ff477..6f077b0d34d6afbed9b74341eac76e03bd970336 100644
+--- a/src/collision.h
++++ b/src/collision.h
+@@ -40,17 +40,17 @@ static inline InstanceBBox Collision_computeBBox(Runner* runner, Instance* inst)
+         return ret;
+     }
+ 
+-    GMLReal marginL = (spr->bboxMode == 1) ? 0.0 : (GMLReal) spr->marginLeft;
++    GMLReal marginL = (spr->bboxMode == 1) ? (GMLReal) 0.0 : (GMLReal) spr->marginLeft;
+     GMLReal marginR = (spr->bboxMode == 1) ? (GMLReal) spr->width : (GMLReal) (spr->marginRight + 1);
+-    GMLReal marginT = (spr->bboxMode == 1) ? 0.0 : (GMLReal) spr->marginTop;
++    GMLReal marginT = (spr->bboxMode == 1) ? (GMLReal) 0.0 : (GMLReal) spr->marginTop;
+     GMLReal marginB = (spr->bboxMode == 1) ? (GMLReal) spr->height : (GMLReal) (spr->marginBottom + 1);
+     GMLReal originX = (GMLReal) spr->originX;
+     GMLReal originY = (GMLReal) spr->originY;
+ 
+     GMLReal left, right, top, bottom;
+-    if (inst->imageAngle != 0.0 && GMLReal_fabs(inst->imageAngle) > 0.0001) {
++    if (inst->imageAngle != (GMLReal) 0.0 && GMLReal_fabs(inst->imageAngle) > (GMLReal) 0.0001) {
+         // Compute rotated AABB: transform the 4 corners of the unrotated bbox
+-        GMLReal rad = inst->imageAngle * M_PI / 180.0;
++        GMLReal rad = inst->imageAngle * ((GMLReal) M_PI / (GMLReal) 180.0);
+         GMLReal cs = GMLReal_cos(rad);
+         GMLReal sn = GMLReal_sin(rad);
+ 
+@@ -85,11 +85,11 @@ static inline InstanceBBox Collision_computeBBox(Runner* runner, Instance* inst)
+         GMLReal dx1 = marginR - originX;
+         GMLReal dy0 = marginT - originY;
+         GMLReal dy1 = marginB - originY;
+-        if (inst->imageXscale != 1.0) {
++        if (inst->imageXscale != (GMLReal) 1.0) {
+             dx0 *= inst->imageXscale;
+             dx1 *= inst->imageXscale;
+         }
+-        if (inst->imageYscale != 1.0) {
++        if (inst->imageYscale != (GMLReal) 1.0) {
+             dy0 *= inst->imageYscale;
+             dy1 *= inst->imageYscale;
+         }
+@@ -136,9 +136,9 @@ static inline InstanceOBB Collision_instanceOBB(Sprite* spr, Instance* inst) {
+     InstanceOBB obb;
+     obb.x = inst->x;
+     obb.y = inst->y;
+-    GMLReal marginL = spr->bboxMode == 1 ? 0.0 : (GMLReal) spr->marginLeft;
++    GMLReal marginL = spr->bboxMode == 1 ? (GMLReal) 0.0 : (GMLReal) spr->marginLeft;
+     GMLReal marginR = spr->bboxMode == 1 ? (GMLReal) spr->width : (GMLReal) (spr->marginRight + 1);
+-    GMLReal marginT = spr->bboxMode == 1 ? 0.0 : (GMLReal) spr->marginTop;
++    GMLReal marginT = spr->bboxMode == 1 ? (GMLReal) 0.0 : (GMLReal) spr->marginTop;
+     GMLReal marginB = spr->bboxMode == 1 ? (GMLReal) spr->height : (GMLReal) (spr->marginBottom + 1);
+     GMLReal originX = (GMLReal) spr->originX;
+     GMLReal originY = (GMLReal) spr->originY;
+@@ -148,14 +148,14 @@ static inline InstanceOBB Collision_instanceOBB(Sprite* spr, Instance* inst) {
+     obb.ly1 = inst->imageYscale * (marginB - originY);
+     if (obb.lx0 > obb.lx1) { GMLReal t = obb.lx0; obb.lx0 = obb.lx1; obb.lx1 = t; }
+     if (obb.ly0 > obb.ly1) { GMLReal t = obb.ly0; obb.ly0 = obb.ly1; obb.ly1 = t; }
+-    obb.rotated = GMLReal_fabs(inst->imageAngle) > 0.0001;
++    obb.rotated = GMLReal_fabs(inst->imageAngle) > (GMLReal) 0.0001;
+     if (obb.rotated) {
+-        GMLReal rad = inst->imageAngle * M_PI / 180.0;
++        GMLReal rad = inst->imageAngle * ((GMLReal) M_PI / (GMLReal) 180.0);
+         obb.cs = GMLReal_cos(rad);
+         obb.sn = GMLReal_sin(rad);
+     } else {
+-        obb.cs = 1.0;
+-        obb.sn = 0.0;
++        obb.cs = (GMLReal) 1.0;
++        obb.sn = (GMLReal) 0.0;
+     }
+     return obb;
+ }
+@@ -170,7 +170,7 @@ static inline void Collision_obbWorldToLocal(const InstanceOBB* obb, GMLReal wx,
+ 
+ // Returns true iff the OBB needs SAT-style testing rather than AABB. Only sepMasks == 2 sprites that are actually rotated qualify; everything else (axis-aligned, or precise sprites which fall through to per-pixel scans) is handled correctly by AABB.
+ static inline bool Collision_obbNeedsSAT(Sprite* spr, Instance* inst) {
+-    return spr != nullptr && spr->sepMasks == 2 && GMLReal_fabs(inst->imageAngle) > 0.0001;
++    return spr != nullptr && spr->sepMasks == 2 && GMLReal_fabs(inst->imageAngle) > (GMLReal) 0.0001;
+ }
+ 
+ static inline bool Collision_rectOverlapsInstance(Runner* runner, Instance* inst, GMLReal rx1, GMLReal ry1, GMLReal rx2, GMLReal ry2) {
+@@ -445,8 +445,8 @@ static inline bool Collision_pointInInstance(Sprite* spr, Instance* inst, GMLRea
+ }
+ 
+ static inline int64_t Collision_roundQ16(GMLReal v) {
+-    GMLReal s = v * 65536.0;
+-    return (s >= 0.0) ? (int64_t)(s + 0.5) : (int64_t)(s - 0.5);
++    GMLReal s = v * (GMLReal) 65536.0;
++    return (s >= (GMLReal) 0.0) ? (int64_t)(s + (GMLReal) 0.5) : (int64_t)(s - (GMLReal) 0.5);
+ }
+ 
+ typedef struct {
+@@ -463,14 +463,14 @@ typedef struct {
+ static inline bool Collision_initPreciseScan(Sprite* spr, Instance* inst, bool precise,
+                                              GMLReal startWx, GMLReal startWy,
+                                              CollisionPreciseScan* out) {
+-    if (0.0001 > GMLReal_fabs(inst->imageXscale)) return false;
+-    if (0.0001 > GMLReal_fabs(inst->imageYscale)) return false;
+-
+-    GMLReal invSx = 1.0 / inst->imageXscale;
+-    GMLReal invSy = 1.0 / inst->imageYscale;
+-    GMLReal cs = 1.0, sn = 0.0;
+-    if (inst->imageAngle != 0.0 && GMLReal_fabs(inst->imageAngle) > 0.0001) {
+-        GMLReal rad = inst->imageAngle * M_PI / 180.0;
++    if ((GMLReal) 0.0001 > GMLReal_fabs(inst->imageXscale)) return false;
++    if ((GMLReal) 0.0001 > GMLReal_fabs(inst->imageYscale)) return false;
++
++    GMLReal invSx = (GMLReal) 1.0 / inst->imageXscale;
++    GMLReal invSy = (GMLReal) 1.0 / inst->imageYscale;
++    GMLReal cs = (GMLReal) 1.0, sn = (GMLReal) 0.0;
++    if (inst->imageAngle != (GMLReal) 0.0 && GMLReal_fabs(inst->imageAngle) > (GMLReal) 0.0001) {
++        GMLReal rad = inst->imageAngle * ((GMLReal) M_PI / (GMLReal) 180.0);
+         cs = GMLReal_cos(rad);
+         sn = GMLReal_sin(rad);
+     }
+diff --git a/src/runner.c b/src/runner.c
+index ddebca5dc65c7a504b4a381088d8ff3b3aae8c47..2afb4203632ebf12b04b9282c4f61cf02f24583a 100644
+--- a/src/runner.c
++++ b/src/runner.c
+@@ -3561,7 +3561,9 @@ static void dispatchCollisionEvents(Runner* runner) {
+                 int32_t snapEnd = (int32_t) arrlen(runner->instanceSnapshots);
+ 
+                 // The YoYo Runner sorts it by the object index THEN by the instanceId
+-                qsort(runner->instanceSnapshots + snapBase, snapEnd - snapBase, sizeof(Instance*), sortInstancesByObjectIndexThenInstanceIdAscending);
++                if (snapEnd - snapBase > 1) {
++                    qsort(runner->instanceSnapshots + snapBase, snapEnd - snapBase, sizeof(Instance*), sortInstancesByObjectIndexThenInstanceIdAscending);
++                }
+ 
+                 for (int32_t snapIdx = snapBase; snapEnd > snapIdx; snapIdx++) {
+                     Instance* other = runner->instanceSnapshots[snapIdx];
+diff --git a/src/sf2000/sf2000_audio.c b/src/sf2000/sf2000_audio.c
+index 050bdf3cf5fdb5579177f9212a316ae6e4f9d23d..2c3546e39ab986e43e3c5e62d1ebd4a2cd45d663 100644
+--- a/src/sf2000/sf2000_audio.c
++++ b/src/sf2000/sf2000_audio.c
+@@ -1374,6 +1374,15 @@ void Sf2000AudioSystem_renderFrame(void) {
+                         s_mixAccum[s] += ((int32_t)src[s] * gainQ12) >> 12;
+                     }
+                     slot->scratchPos += (int32_t)n;
++                } else if (step == 131072u && slot->samplePosFrac == 0u) {
++                    unsigned maxOut = (unsigned)(avail + 1) >> 1;
++                    unsigned n = frameSamples < maxOut ? frameSamples : maxOut;
++                    for (unsigned s = 0; s < n; s++) {
++                        s_mixAccum[s] += ((int32_t)src[s * 2u] * gainQ12) >> 12;
++                    }
++                    int consumed = (int)(n * 2u);
++                    if (consumed > avail) consumed = avail;
++                    slot->scratchPos += consumed;
+                 } else {
+                     uint32_t posFrac = slot->samplePosFrac;
+                     for (unsigned s = 0; s < frameSamples; s++) {
+diff --git a/src/spatial_grid.c b/src/spatial_grid.c
+index 67cac0be038832d69b65034195ffcc19cba5c3fa..48b3ebd286f568b00579df8c8787c3fc2eea83a9 100644
+--- a/src/spatial_grid.c
++++ b/src/spatial_grid.c
+@@ -33,11 +33,10 @@ void SpatialGrid_free(SpatialGrid* grid) {
+     free(grid);
+ }
+ 
+-void SpatialGrid_removeInstance(SpatialGrid* grid, Instance* instance) {
++static bool SpatialGrid_removeFromTrackedCells(SpatialGrid* grid, Instance* instance) {
+     int32_t totalCells = (int32_t)grid->gridWidth * (int32_t)grid->gridHeight;
+     bool removedAny = false;
+ 
+-    // First remove from any cells named in this instance's cached tracking data.
+     repeat(arrlen(instance->collisionCells), i) {
+         uint32_t gridCoordinates = instance->collisionCells[i];
+         int32_t gridX = SpatialGrid_unpackGridX(gridCoordinates);
+@@ -58,6 +57,12 @@ void SpatialGrid_removeInstance(SpatialGrid* grid, Instance* instance) {
+             }
+         }
+     }
++    return removedAny;
++}
++
++void SpatialGrid_removeInstance(SpatialGrid* grid, Instance* instance) {
++    int32_t totalCells = (int32_t)grid->gridWidth * (int32_t)grid->gridHeight;
++    bool removedAny = SpatialGrid_removeFromTrackedCells(grid, instance);
+ 
+     // Some room transitions and destructions can leave stale grid entries even when
+     // collisionCells was cleared or never populated for the current grid. Fall back to
+@@ -102,17 +107,27 @@ void SpatialGrid_syncGrid(Runner* runner, SpatialGrid* grid) {
+ 
+         instance->spatialGridDirty = false;
+ 
+-        // Remove from old cells
+-        SpatialGrid_removeInstance(grid, instance);
+-
+         InstanceBBox bbox = Collision_computeBBox(runner, instance);
+-
+-        arrsetlen(instance->collisionCells, 0);
+-
+-        if (!bbox.valid)
++        if (!bbox.valid) {
++            if (arrlen(instance->collisionCells) > 0) {
++                SpatialGrid_removeFromTrackedCells(grid, instance);
++                arrsetlen(instance->collisionCells, 0);
++            }
+             continue;
++        }
+ 
+         SpatialGridRange range = SpatialGrid_computeCellRange(grid, bbox.left, bbox.top, bbox.right, bbox.bottom);
++        int32_t expectedCells = (int32_t)(range.maxGridX - range.minGridX + 1) *
++                                (int32_t)(range.maxGridY - range.minGridY + 1);
++        int32_t oldLen = (int32_t)arrlen(instance->collisionCells);
++        if (oldLen == expectedCells && expectedCells > 0 &&
++            (uint32_t)instance->collisionCells[0] == SpatialGrid_packGridCoordinates(range.minGridX, range.minGridY) &&
++            (uint32_t)instance->collisionCells[expectedCells - 1] == SpatialGrid_packGridCoordinates(range.maxGridX, range.maxGridY)) {
++            continue;
++        }
++
++        SpatialGrid_removeFromTrackedCells(grid, instance);
++        arrsetlen(instance->collisionCells, 0);
+ 
+         for (int32_t gx = range.minGridX; range.maxGridX >= gx; gx++) {
+             for (int32_t gy = range.minGridY; range.maxGridY >= gy; gy++) {
+diff --git a/src/spatial_grid.h b/src/spatial_grid.h
+index bc07e0786b2b792bc889da33129da16f81728355..7587e9d89f3f7ba6182eab38cef904a1c7366177 100644
+--- a/src/spatial_grid.h
++++ b/src/spatial_grid.h
+@@ -48,10 +48,11 @@ typedef struct {
+ } SpatialGridRange;
+ 
+ static inline SpatialGridRange SpatialGrid_computeCellRange(SpatialGrid* grid, GMLReal left, GMLReal top, GMLReal right, GMLReal bottom) {
+-    int16_t minGridX = (int16_t) (left / SPATIAL_GRID_CELL_SIZE);
+-    int16_t minGridY = (int16_t) (top / SPATIAL_GRID_CELL_SIZE);
+-    int16_t maxGridX = (int16_t) (right / SPATIAL_GRID_CELL_SIZE);
+-    int16_t maxGridY = (int16_t) (bottom / SPATIAL_GRID_CELL_SIZE);
++    const GMLReal invCellSize = (GMLReal)1.0 / (GMLReal)SPATIAL_GRID_CELL_SIZE;
++    int16_t minGridX = (int16_t) (left * invCellSize);
++    int16_t minGridY = (int16_t) (top * invCellSize);
++    int16_t maxGridX = (int16_t) (right * invCellSize);
++    int16_t maxGridY = (int16_t) (bottom * invCellSize);
+     if (0 > minGridX) minGridX = 0;
+     if (0 > minGridY) minGridY = 0;
+     if (0 > maxGridX) maxGridX = 0;
+diff --git a/src/sw_renderer/atlas.c b/src/sw_renderer/atlas.c
+index 99b340bd66966e67106522ffe6cffbb373049d81..a60366154033e63499ce0abab28aec2736c7d4db 100644
+--- a/src/sw_renderer/atlas.c
++++ b/src/sw_renderer/atlas.c
+@@ -100,15 +100,23 @@ bool SwAtlas_open(SwAtlas* atlas, const char* dir) {
+     atlas->pixels = fopen(path, "rb");
+     if (!atlas->pixels) { free(recs); return false; }
+ 
++    atlas->byTpag = (SwAtlasBlock**)calloc((size_t)count, sizeof(SwAtlasBlock*));
++    if (!atlas->byTpag) {
++        fclose(atlas->pixels);
++        free(recs);
++        return false;
++    }
++
+     atlas->records = recs;
+     atlas->count   = count;
+     return true;
+ }
+ 
+ void SwAtlas_close(SwAtlas* atlas) {
++    SwAtlasCache_clear(atlas);
+     if (atlas->pixels) fclose(atlas->pixels);
++    free(atlas->byTpag);
+     free(atlas->records);
+-    SwAtlasCache_clear(atlas);
+     memset(atlas, 0, sizeof(*atlas));
+ }
+ 
+@@ -123,28 +131,28 @@ const SwAtlasRecord* SwAtlas_record(const SwAtlas* atlas, int32_t tpagIndex) {
+ /* ------------------------------------------------------------------- cache -- */
+ 
+ static SwAtlasBlock* cacheFind(SwAtlas* atlas, int32_t tpagIndex) {
+-    SwAtlasBlock* b = atlas->lruHead;
+-    while (b) {
+-        if (b->tpagIndex == tpagIndex) return b;
+-        b = b->next;
+-    }
+-    return NULL;
++    if (!atlas->byTpag || tpagIndex < 0 || (uint32_t)tpagIndex >= atlas->count)
++        return NULL;
++    return atlas->byTpag[tpagIndex];
+ }
+ 
+ static void cacheUnlink(SwAtlas* atlas, SwAtlasBlock* b) {
+     if (b->prev) b->prev->next = b->next; else atlas->lruHead = b->next;
+-    if (b->next) b->next->prev = b->prev;
++    if (b->next) b->next->prev = b->prev; else atlas->lruTail = b->prev;
+     b->prev = b->next = NULL;
+ }
+ 
+ static void cachePushFront(SwAtlas* atlas, SwAtlasBlock* b) {
+     b->prev = NULL;
+     b->next = atlas->lruHead;
+-    if (b->next) b->next->prev = b;
++    if (b->next) b->next->prev = b; else atlas->lruTail = b;
+     atlas->lruHead = b;
+ }
+ 
+ static void cacheDrop(SwAtlas* atlas, SwAtlasBlock* b) {
++    if (atlas->byTpag && b->tpagIndex >= 0 && (uint32_t)b->tpagIndex < atlas->count) {
++        atlas->byTpag[b->tpagIndex] = NULL;
++    }
+     cacheUnlink(atlas, b);
+     atlas->cacheBytes -= b->bytes;
+     atlas->blockCount--;
+@@ -154,6 +162,8 @@ static void cacheDrop(SwAtlas* atlas, SwAtlasBlock* b) {
+ 
+ void SwAtlasCache_clear(SwAtlas* atlas) {
+     while (atlas->lruHead) cacheDrop(atlas, atlas->lruHead);
++    atlas->lruHead = NULL;
++    atlas->lruTail = NULL;
+     atlas->cacheBytes = 0;
+     atlas->blockCount = 0;
+     atlas->cacheMisses = 0;
+@@ -162,8 +172,7 @@ void SwAtlasCache_clear(SwAtlas* atlas) {
+ 
+ /* Evict from the tail until there is room for `bytes`. */
+ static void cacheMakeRoom(SwAtlas* atlas, uint32_t bytes) {
+-    SwAtlasBlock* tail = NULL;
+-    for (SwAtlasBlock* b = atlas->lruHead; b; b = b->next) tail = b;
++    SwAtlasBlock* tail = atlas->lruTail;
+     while (tail && atlas->cacheBytes + bytes > atlas->cacheBudget) {
+         SwAtlasBlock* victim = tail;
+         tail = victim->prev;
+@@ -184,8 +193,10 @@ SwAtlasBlock* SwAtlas_block(SwAtlas* atlas, int32_t tpagIndex) {
+     SwAtlasBlock* b = cacheFind(atlas, tpagIndex);
+     if (b) {
+         atlas->cacheHits++;
+-        cacheUnlink(atlas, b);
+-        cachePushFront(atlas, b);
++        if (b != atlas->lruHead) {
++            cacheUnlink(atlas, b);
++            cachePushFront(atlas, b);
++        }
+         b->pinned = true;
+         return b;
+     }
+@@ -203,30 +214,27 @@ SwAtlasBlock* SwAtlas_block(SwAtlas* atlas, int32_t tpagIndex) {
+ 
+     /* The pack stores each block as interleaved bytes: byte 0 is rb (R high, B low),
+      * byte 1 is ga (G high, A low).  That is what Image.merge('LA', (rb, ga)).tobytes()
+-     * emits in pack_assets.py. */
+-    uint8_t* raw = (uint8_t*)malloc(rawBytes);
+-    if (!raw) return NULL;
++     * emits in pack_assets.py.  Read directly into the final buffer and convert in-place. */
++    uint16_t* pixels = (uint16_t*)malloc(rawBytes);
++    if (!pixels) return NULL;
+     if (fseek(atlas->pixels, (long)rec->offset, SEEK_SET) != 0 ||
+-        fread(raw, 1, rawBytes, atlas->pixels) != rawBytes) {
+-        free(raw);
++        fread(pixels, 1, rawBytes, atlas->pixels) != rawBytes) {
++        free(pixels);
+         return NULL;
+     }
+ 
+-    uint16_t* pixels = (uint16_t*)malloc(rawBytes);
+-    if (!pixels) { free(raw); return NULL; }
+-
++    const uint8_t* raw = (const uint8_t*)pixels;
+     bool hasAlpha = false;
+     for (uint32_t i = 0; i < npix; i++) {
+         uint8_t rb = raw[i * 2 + 0];
+         uint8_t ga = raw[i * 2 + 1];
+-        int r  = rb >> 4;          /* R in the high nibble */
+-        int bl = rb & 0x0F;        /* B in the low nibble  */
+-        int g  = ga >> 4;          /* G in the high nibble */
+-        int a  = ga & 0x0F;        /* A in the low nibble  */
++        int a = ga & 0x0F;
+         if (a < 15) hasAlpha = true;
+-        pixels[i] = (uint16_t)((r << 12) | (g << 8) | (bl << 4) | a);
++        pixels[i] = (uint16_t)(((uint32_t)(rb & 0xF0) << 8) |
++                               ((uint32_t)(ga & 0xF0) << 4) |
++                               ((uint32_t)(rb & 0x0F) << 4) |
++                               (uint32_t)a);
+     }
+-    free(raw);
+ 
+     b = (SwAtlasBlock*)calloc(1, sizeof(SwAtlasBlock));
+     if (!b) { free(pixels); return NULL; }
+@@ -238,6 +246,9 @@ SwAtlasBlock* SwAtlas_block(SwAtlas* atlas, int32_t tpagIndex) {
+     b->pinned = true;
+     b->hasAlpha = hasAlpha;
+     cachePushFront(atlas, b);
++    if (atlas->byTpag && tpagIndex >= 0 && (uint32_t)tpagIndex < atlas->count) {
++        atlas->byTpag[tpagIndex] = b;
++    }
+     atlas->cacheBytes += b->bytes;
+     atlas->blockCount++;
+     return b;
+diff --git a/src/sw_renderer/atlas.h b/src/sw_renderer/atlas.h
+index e31a779d57dc63e11e8bffe155dc3c48654e7cc5..29480bb286a0a6b75933d6b0fc1abbcb78d086bf 100644
+--- a/src/sw_renderer/atlas.h
++++ b/src/sw_renderer/atlas.h
+@@ -63,7 +63,9 @@ typedef struct {
+     uint32_t count;
+     FILE*    pixels;
+ 
++    SwAtlasBlock** byTpag;
+     SwAtlasBlock* lruHead;
++    SwAtlasBlock* lruTail;
+     uint32_t cacheBytes;
+     uint32_t cacheBudget;
+     uint32_t blockCount;
+diff --git a/src/sw_renderer/sw_renderer.c b/src/sw_renderer/sw_renderer.c
+index 701d2ce6416255781baaeb409c878e40f0998931..2df8f99ed7aa1aa57a70a5aea99b714d8d3f10ff 100644
+--- a/src/sw_renderer/sw_renderer.c
++++ b/src/sw_renderer/sw_renderer.c
+@@ -105,12 +105,13 @@ static inline uint16_t bgrToRgb565(uint32_t c) {
+     return (uint16_t)((r5 << 11) | (g6 << 5) | b5);
+ }
+ 
+-/* src * a + dst * (255 - a), all 8-bit. */
++/* src * a + dst * (255 - a), all 8-bit, via 32-bit SWAR 5-bit alpha (0..32). */
+ static inline uint16_t blendRgb565(uint16_t src, uint16_t dst, int32_t a) {
+-    int32_t r = (((src >> 11) & 0x1F) * a + ((dst >> 11) & 0x1F) * (255 - a)) >> 8;
+-    int32_t g = (((src >> 5) & 0x3F) * a + ((dst >> 5) & 0x3F) * (255 - a)) >> 8;
+-    int32_t b = ((src & 0x1F) * a + (dst & 0x1F) * (255 - a)) >> 8;
+-    return (uint16_t)((r << 11) | (g << 5) | b);
++    uint32_t a5 = (uint32_t)(a + 4) >> 3;
++    uint32_t s = ((uint32_t)src | ((uint32_t)src << 16)) & 0x07E0F81Fu;
++    uint32_t d = ((uint32_t)dst | ((uint32_t)dst << 16)) & 0x07E0F81Fu;
++    uint32_t res = ((s * a5 + d * (32u - a5)) >> 5) & 0x07E0F81Fu;
++    return (uint16_t)(res | (res >> 16));
+ }
+ 
+ /* ------------------------------------------------------------------- state -- */
+@@ -264,15 +265,36 @@ static void fillRect(SwRenderer* sw, int32_t x, int32_t y, int32_t w, int32_t h,
+ 
+     uint16_t c = bgrToRgb565(color);
+     int32_t a = (int32_t)(alpha * 255.0f);
++    if (a <= 0) return;
+     if (!sw->colorWriteR && !sw->colorWriteG && !sw->colorWriteB) return;
+ 
++    if (a >= 255) {
++        if (c == 0) {
++            size_t rowBytes = (size_t)w * sizeof(uint16_t);
++            for (int32_t row = 0; row < h; row++) {
++                memset(sw->target + (size_t)(y + row) * sw->targetW + x, 0, rowBytes);
++            }
++            return;
++        }
++        uint32_t cc = ((uint32_t)c << 16) | (uint32_t)c;
++        for (int32_t row = 0; row < h; row++) {
++            uint16_t* d = sw->target + (size_t)(y + row) * sw->targetW + x;
++            int32_t rem = w;
++            if (((uintptr_t)d & 2u) && rem > 0) {
++                *d++ = c;
++                rem--;
++            }
++            uint32_t* d32 = (uint32_t*)d;
++            int32_t pairs = rem >> 1;
++            for (int32_t p = 0; p < pairs; p++) d32[p] = cc;
++            if (rem & 1) ((uint16_t*)(d32 + pairs))[0] = c;
++        }
++        return;
++    }
++
+     for (int32_t row = 0; row < h; row++) {
+         uint16_t* d = sw->target + (size_t)(y + row) * sw->targetW + x;
+-        if (a >= 255) {
+-            for (int32_t col = 0; col < w; col++) d[col] = c;
+-        } else if (a > 0) {
+-            for (int32_t col = 0; col < w; col++) d[col] = blendRgb565(c, d[col], a);
+-        }
++        for (int32_t col = 0; col < w; col++) d[col] = blendRgb565(c, d[col], a);
+     }
+ }
+ 
+@@ -470,14 +492,102 @@ static void blitBlock(SwRenderer* sw, SwAtlasBlock* blk,
+         /* 2x2 area-coverage filter with gamma LUT for text and downscaled sprites.
+          * Ensures 1-pixel strokes (dots on 'i', crossbars on 't'/'e') are never dropped,
+          * while proper alpha blending prevents characters from fusing together. */
++        int32_t maxSx = sx + sw_ - 1;
++        int32_t maxSy = sy + sh_ - 1;
++        if (!flipX && !sw->alphaTestEnable && tint.isWhite && gAlpha >= 255) {
++            bool xInBounds = (startXFix >> 16) >= sx &&
++                             ((startXFix + (w - 1) * stepX) >> 16) + 1 <= maxSx;
++            if (xInBounds) {
++                for (int32_t row = 0; row < h; row++, currYFix += stepY) {
++                    int32_t syPix0 = currYFix >> 16;
++                    if (flipY) syPix0 = sy + (sh_ - 1) - (syPix0 - sy);
++                    if (syPix0 < sy) syPix0 = sy;
++                    if (syPix0 > maxSy) syPix0 = maxSy;
++                    int32_t syPix1 = (syPix0 < maxSy) ? (syPix0 + 1) : syPix0;
++
++                    const uint16_t* s0 = blk->pixels + (size_t)syPix0 * blk->w;
++                    const uint16_t* s1 = blk->pixels + (size_t)syPix1 * blk->w;
++                    uint16_t* d = sw->target + (size_t)(y0 + row) * sw->targetW + x0;
++                    int32_t currXFix = startXFix;
++
++                    for (int32_t col = 0; col < w; col++, currXFix += stepX) {
++                        int32_t sxi0 = currXFix >> 16;
++                        uint16_t p00 = s0[sxi0];
++                        uint16_t p01 = s0[sxi0 + 1];
++                        uint16_t p10 = s1[sxi0];
++                        uint16_t p11 = s1[sxi0 + 1];
++                        if (((p00 | p01 | p10 | p11) & 0xF) == 0) continue;
++
++                        int32_t a00 = p00 & 0xF;
++                        int32_t a01 = p01 & 0xF;
++                        int32_t a10 = p10 & 0xF;
++                        int32_t a11 = p11 & 0xF;
++                        int32_t a_sum = a00 + a01 + a10 + a11;
++
++                        uint16_t bestP = p00;
++                        int32_t maxA = a00;
++                        if (a01 > maxA) { maxA = a01; bestP = p01; }
++                        if (a10 > maxA) { maxA = a10; bestP = p10; }
++                        if (a11 > maxA) { maxA = a11; bestP = p11; }
++
++                        int32_t effA = (int32_t)g_downscaleLut[a_sum];
++                        uint16_t c = rgb444To565Lut[bestP >> 4];
++                        d[col] = (!blendOn || effA >= 255) ? c : blendRgb565(c, d[col], effA);
++                    }
++                }
++                return;
++            }
++            for (int32_t row = 0; row < h; row++, currYFix += stepY) {
++                int32_t syPix0 = currYFix >> 16;
++                if (flipY) syPix0 = sy + (sh_ - 1) - (syPix0 - sy);
++                if (syPix0 < sy) syPix0 = sy;
++                if (syPix0 > maxSy) syPix0 = maxSy;
++                int32_t syPix1 = (syPix0 < maxSy) ? (syPix0 + 1) : syPix0;
++
++                const uint16_t* s0 = blk->pixels + (size_t)syPix0 * blk->w;
++                const uint16_t* s1 = blk->pixels + (size_t)syPix1 * blk->w;
++                uint16_t* d = sw->target + (size_t)(y0 + row) * sw->targetW + x0;
++                int32_t currXFix = startXFix;
++
++                for (int32_t col = 0; col < w; col++, currXFix += stepX) {
++                    int32_t sxi0 = currXFix >> 16;
++                    if (sxi0 < sx) sxi0 = sx;
++                    if (sxi0 > maxSx) sxi0 = maxSx;
++                    int32_t sxi1 = (sxi0 < maxSx) ? (sxi0 + 1) : sxi0;
++
++                    uint16_t p00 = s0[sxi0];
++                    uint16_t p01 = s0[sxi1];
++                    uint16_t p10 = s1[sxi0];
++                    uint16_t p11 = s1[sxi1];
++                    if (((p00 | p01 | p10 | p11) & 0xF) == 0) continue;
++
++                    int32_t a00 = p00 & 0xF;
++                    int32_t a01 = p01 & 0xF;
++                    int32_t a10 = p10 & 0xF;
++                    int32_t a11 = p11 & 0xF;
++                    int32_t a_sum = a00 + a01 + a10 + a11;
++
++                    uint16_t bestP = p00;
++                    int32_t maxA = a00;
++                    if (a01 > maxA) { maxA = a01; bestP = p01; }
++                    if (a10 > maxA) { maxA = a10; bestP = p10; }
++                    if (a11 > maxA) { maxA = a11; bestP = p11; }
++
++                    int32_t effA = (int32_t)g_downscaleLut[a_sum];
++                    uint16_t c = rgb444To565Lut[bestP >> 4];
++                    d[col] = (!blendOn || effA >= 255) ? c : blendRgb565(c, d[col], effA);
++                }
++            }
++            return;
++        }
++
+         for (int32_t row = 0; row < h; row++, currYFix += stepY) {
+             int32_t syPix0 = currYFix >> 16;
+             if (flipY) syPix0 = sy + (sh_ - 1) - (syPix0 - sy);
+             if (syPix0 < sy) syPix0 = sy;
+-            if (syPix0 >= sy + sh_) syPix0 = sy + sh_ - 1;
++            if (syPix0 > maxSy) syPix0 = maxSy;
+ 
+-            int32_t syPix1 = syPix0 + 1;
+-            if (syPix1 >= sy + sh_) syPix1 = syPix0;
++            int32_t syPix1 = (syPix0 < maxSy) ? (syPix0 + 1) : syPix0;
+ 
+             const uint16_t* s0 = blk->pixels + (size_t)syPix0 * blk->w;
+             const uint16_t* s1 = blk->pixels + (size_t)syPix1 * blk->w;
+@@ -489,15 +599,15 @@ static void blitBlock(SwRenderer* sw, SwAtlasBlock* blk,
+                 int32_t sxi0 = currXFix >> 16;
+                 if (flipX) sxi0 = sx + (sw_ - 1) - (sxi0 - sx);
+                 if (sxi0 < sx) sxi0 = sx;
+-                if (sxi0 >= sx + sw_) sxi0 = sx + sw_ - 1;
++                if (sxi0 > maxSx) sxi0 = maxSx;
+ 
+-                int32_t sxi1 = sxi0 + 1;
+-                if (sxi1 >= sx + sw_) sxi1 = sxi0;
++                int32_t sxi1 = (sxi0 < maxSx) ? (sxi0 + 1) : sxi0;
+ 
+                 uint16_t p00 = s0[sxi0];
+                 uint16_t p01 = s0[sxi1];
+                 uint16_t p10 = s1[sxi0];
+                 uint16_t p11 = s1[sxi1];
++                if (((p00 | p01 | p10 | p11) & 0xF) == 0) continue;
+ 
+                 int32_t a00 = p00 & 0xF;
+                 int32_t a01 = p01 & 0xF;
+@@ -505,7 +615,6 @@ static void blitBlock(SwRenderer* sw, SwAtlasBlock* blk,
+                 int32_t a11 = p11 & 0xF;
+ 
+                 int32_t a_sum = a00 + a01 + a10 + a11;
+-                if (a_sum == 0) continue;
+ 
+                 uint16_t bestP = p00;
+                 int32_t maxA = a00;
+@@ -513,7 +622,7 @@ static void blitBlock(SwRenderer* sw, SwAtlasBlock* blk,
+                 if (a10 > maxA) { maxA = a10; bestP = p10; }
+                 if (a11 > maxA) { maxA = a11; bestP = p11; }
+ 
+-                int32_t effA = (int32_t)g_downscaleLut[a_sum > 63 ? 63 : a_sum];
++                int32_t effA = (int32_t)g_downscaleLut[a_sum];
+                 if (gAlpha < 255) effA = (effA * gAlpha) >> 8;
+                 if (effA <= testRef) continue;
+ 
+@@ -687,10 +796,46 @@ static void blitSprite(SwRenderer* sw, int32_t tpagIndex,
+                        float xscale, float yscale, float angleDeg,
+                        float pivotX, float pivotY,
+                        uint32_t color, float alpha) {
++    if (alpha <= 0.0f) return;
++    const SwAtlasRecord* rec = SwAtlas_record(&sw->atlas, tpagIndex);
++    if (rec == NULL) return;
++
++    bool flipX = xscale < 0.0f;
++    bool flipY = yscale < 0.0f;
++
++    float sxScreen = worldScaleX(sw, destW);
++    float syScreen = worldScaleY(sw, destH);
++    int32_t dw = fastRoundf(fabsf(sxScreen));
++    int32_t dh = fastRoundf(fabsf(syScreen));
++    if (dw <= 0 || dh <= 0) return;
++
++    /* Anchor in screen space; the rotation pivot is applied relative to it. */
++    float anchorX = x + localX * xscale;
++    float anchorY = y + localY * yscale;
++    int32_t dx = toScreenX(sw, anchorX);
++    int32_t dy = toScreenY(sw, anchorY);
++
++    float cs = 1.0f, sn = 0.0f;
++    int32_t rdx = dx, rdy = dy;
++    if (angleDeg == 0.0f) {
++        if (flipX) dx -= dw;
++        if (flipY) dy -= dh;
++        if (dx + dw <= 0 || dy + dh <= 0 || dx >= sw->targetW || dy >= sw->targetH) return;
++    } else {
++        /* Rotate the destination rect's top-left about (pivotX, pivotY) in world
++         * space, matching glDrawSpritePartColor's construction. */
++        float rad = -angleDeg * ((float)M_PI / 180.0f);
++        cs = cosf(rad);
++        sn = sinf(rad);
++        float px = pivotX * sw->scaleX, py = pivotY * sw->scaleY;
++        float ox = (float)dx - px, oy = (float)dy - py;
++        rdx = fastRoundf(cs * ox - sn * oy + px);
++        rdy = fastRoundf(sn * ox + cs * oy + py);
++        if (rdx + dw <= 0 || rdy + dh <= 0 || rdx >= sw->targetW || rdy >= sw->targetH) return;
++    }
++
+     SwAtlasBlock* blk = SwAtlas_block(&sw->atlas, tpagIndex);
+     if (blk == NULL) return;
+-    const SwAtlasRecord* rec = SwAtlas_record(&sw->atlas, tpagIndex);
+-    if (rec == NULL) { SwAtlasCache_release(&sw->atlas, blk); return; }
+ 
+     /* Map source-rect coordinates onto block pixels.  A capped block is smaller than
+      * the original rect, and this is the only place that knows it. */
+@@ -713,37 +858,10 @@ static void blitSprite(SwRenderer* sw, int32_t tpagIndex,
+     if (sW > blk->w) sW = blk->w;
+     if (sH > blk->h) sH = blk->h;
+ 
+-    bool flipX = xscale < 0.0f;
+-    bool flipY = yscale < 0.0f;
+-
+-    float sxScreen = worldScaleX(sw, destW);
+-    float syScreen = worldScaleY(sw, destH);
+-    int32_t dw = fastRoundf(fabsf(sxScreen));
+-    int32_t dh = fastRoundf(fabsf(syScreen));
+-    if (dw <= 0 || dh <= 0) { SwAtlasCache_release(&sw->atlas, blk); return; }
+-
+-    /* Anchor in screen space; the rotation pivot is applied relative to it. */
+-    float anchorX = x + localX * xscale;
+-    float anchorY = y + localY * yscale;
+-    int32_t axScreen = toScreenX(sw, anchorX);
+-    int32_t ayScreen = toScreenY(sw, anchorY);
+-    int32_t dx = axScreen;
+-    int32_t dy = ayScreen;
+-
+     if (angleDeg == 0.0f) {
+-        if (flipX) dx -= dw;
+-        if (flipY) dy -= dh;
+         blitBlock(sw, blk, sx, sy, sW, sH, dx, dy, dw, dh, flipX, flipY,
+                   makeTint(color), alpha);
+     } else {
+-        /* Rotate the destination rect's top-left about (pivotX, pivotY) in world
+-         * space, matching glDrawSpritePartColor's construction. */
+-        float rad = -angleDeg * ((float)M_PI / 180.0f);
+-        float cs = cosf(rad), sn = sinf(rad);
+-        float px = pivotX * sw->scaleX, py = pivotY * sw->scaleY;
+-        float ox = (float)dx - px, oy = (float)dy - py;
+-        int32_t rdx = fastRoundf(cs * ox - sn * oy + px);
+-        int32_t rdy = fastRoundf(sn * ox + cs * oy + py);
+         blitBlockRotated(sw, blk, sx, sy, sW, sH, rdx, rdy, dw, dh, cs, sn,
+                          makeTint(color), alpha);
+     }
+@@ -910,7 +1028,7 @@ static void drawTextInternal(SwRenderer* sw, const char* text, float x, float y,
+                              int32_t c1, int32_t c2, int32_t c3, int32_t c4,
+                               float alpha, float lineSeparation) {
+     DataWin* dw = sw->base.dataWin;
+-    if (text == NULL) return;
++    if (text == NULL || alpha <= 0.0f) return;
+     int32_t fontIndex = sw->base.drawFont;
+     if (fontIndex < 0 || (uint32_t)fontIndex >= dw->font.count) return;
+ 
+@@ -931,6 +1049,27 @@ static void drawTextInternal(SwRenderer* sw, const char* text, float x, float y,
+     float scaleX = xscale * font->scaleX;
+     float scaleY = yscale * font->scaleY;
+ 
++    const SwAtlasRecord* fontRec = NULL;
++    SwAtlasBlock* fontBlk = NULL;
++    float toBlockX = 1.0f, toBlockY = 1.0f;
++    bool fontIs1To1 = false;
++    bool fontFlipX = scaleX < 0.0f;
++    bool fontFlipY = scaleY < 0.0f;
++    SwTint flatTint = makeTint((uint32_t)c1);
++    if (!font->isSpriteFont && font->tpagIndex >= 0 && angleDeg == 0.0f) {
++        fontRec = SwAtlas_record(&sw->atlas, font->tpagIndex);
++        if (fontRec != NULL) {
++            fontBlk = SwAtlas_block(&sw->atlas, font->tpagIndex);
++            if (fontBlk != NULL) {
++                fontIs1To1 = (fontRec->srcWidth == fontBlk->w && fontRec->srcHeight == fontBlk->h);
++                if (!fontIs1To1) {
++                    toBlockX = (fontRec->srcWidth > 0) ? (float)fontBlk->w / (float)fontRec->srcWidth : 1.0f;
++                    toBlockY = (fontRec->srcHeight > 0) ? (float)fontBlk->h / (float)fontRec->srcHeight : 1.0f;
++                }
++            }
++        }
++    }
++
+     int32_t lineStart = 0;
+     float cursorY = valignOffset - (float)font->ascenderOffset;
+ 
+@@ -981,6 +1120,27 @@ static void drawTextInternal(SwRenderer* sw, const char* text, float x, float y,
+                             swDrawSprite((Renderer*)sw, tpagIdx, gx, gy, 0.0f, 0.0f,
+                                          scaleX, scaleY, angleDeg, col, alpha);
+                     }
++                } else if (fontBlk != NULL && glyph->sourceWidth != 0 && glyph->sourceHeight != 0) {
++                    int32_t gdw = fastRoundf(fabsf(worldScaleX(sw, (float)glyph->sourceWidth * scaleX)));
++                    int32_t gdh = fastRoundf(fabsf(worldScaleY(sw, (float)glyph->sourceHeight * scaleY)));
++                    if (gdw > 0 && gdh > 0) {
++                        int32_t gdx = toScreenX(sw, gx);
++                        int32_t gdy = toScreenY(sw, gy);
++                        if (fontFlipX) gdx -= gdw;
++                        if (fontFlipY) gdy -= gdh;
++                        if (gdx + gdw > 0 && gdy + gdh > 0 && gdx < sw->targetW && gdy < sw->targetH) {
++                            int32_t gsx = fontIs1To1 ? (int32_t)glyph->sourceX : fastRoundf((float)glyph->sourceX * toBlockX);
++                            int32_t gsy = fontIs1To1 ? (int32_t)glyph->sourceY : fastRoundf((float)glyph->sourceY * toBlockY);
++                            int32_t gsW = fontIs1To1 ? (int32_t)glyph->sourceWidth : fastRoundf((float)glyph->sourceWidth * toBlockX);
++                            int32_t gsH = fontIs1To1 ? (int32_t)glyph->sourceHeight : fastRoundf((float)glyph->sourceHeight * toBlockY);
++                            if (gsW > 0 && gsH > 0) {
++                                if (gsW > fontBlk->w) gsW = fontBlk->w;
++                                if (gsH > fontBlk->h) gsH = fontBlk->h;
++                                blitBlock(sw, fontBlk, gsx, gsy, gsW, gsH, gdx, gdy, gdw, gdh,
++                                          fontFlipX, fontFlipY, lerpColors ? makeTint(col) : flatTint, alpha);
++                            }
++                        }
++                    }
+                 } else if (font->tpagIndex >= 0 && glyph->sourceWidth != 0 &&
+                            glyph->sourceHeight != 0) {
+                     swDrawSpritePart((Renderer*)sw, font->tpagIndex,
+@@ -1003,6 +1163,10 @@ static void drawTextInternal(SwRenderer* sw, const char* text, float x, float y,
+         lineStart = TextUtils_skipNewline(text, lineEnd, textLen);
+         cursorY += lineStride;
+     }
++
++    if (fontBlk != NULL) {
++        SwAtlasCache_release(&sw->atlas, fontBlk);
++    }
+ }
+ 
+ static void swDrawText(Renderer* renderer, const char* text, float x, float y,
+diff --git a/src/vm.c b/src/vm.c
+index 625c15236f75e51cb8238dcd9a7e10a155bc48b9..53e69bcafb74057b9ca9eccd770fe9e8ece2411a 100644
+--- a/src/vm.c
++++ b/src/vm.c
+@@ -1601,7 +1601,7 @@ static void handleDiv(VMContext* ctx, uint32_t instr) {
+     GMLReal divisor = RValue_toReal(b);
+     // In GameMaker's native runner, ONLY integer/integer division throws a hard error on zero, float/variable types rely on IEEE 754 (produces NaN)
+     if ((type1 == GML_TYPE_INT32 || type1 == GML_TYPE_INT64) && (type2 == GML_TYPE_INT32 || type2 == GML_TYPE_INT64)) {
+-        requireMessageFormatted(__FILE__, __LINE__, divisor != 0.0, "VM: [%s] DoDiv :: Divide by zero", ctx->currentCodeName);
++        requireMessageFormatted(__FILE__, __LINE__, divisor != (GMLReal) 0.0, "VM: [%s] DoDiv :: Divide by zero", ctx->currentCodeName);
+     }
+     GMLReal result = RValue_toReal(a) / divisor;
+     RValue_free(&a);
+@@ -1624,7 +1624,7 @@ static void handleMod(VMContext* ctx, uint32_t instr) {
+     RValue b = stackPop(ctx);
+     RValue a = stackPop(ctx);
+     GMLReal divisor = RValue_toReal(b);
+-    requireMessageFormatted(__FILE__, __LINE__, divisor != 0.0, "VM: [%s] DoMod :: Divide by zero", ctx->currentCodeName);
++    requireMessageFormatted(__FILE__, __LINE__, divisor != (GMLReal) 0.0, "VM: [%s] DoMod :: Divide by zero", ctx->currentCodeName);
+     GMLReal result = GMLReal_fmod(RValue_toReal(a), divisor);
+     RValue_free(&a);
+     RValue_free(&b);
+@@ -1692,7 +1692,7 @@ static void handleConv(VMContext* ctx, uint8_t srcType, uint8_t dstType, uint8_t
+         // Double (0) -> other
+         case 0x20: result = RValue_makeInt32((int32_t) val.real); break;
+         case 0x30: result = RValue_makeInt64((int64_t) val.real); break;
+-        case 0x40: result = RValue_makeBool(val.real > 0.5); break;
++        case 0x40: result = RValue_makeBool(val.real > (GMLReal) 0.5); break;
+         case 0x50: result = val; break; // Double -> Variable (passthrough)
+         case 0x60: { char* s = RValue_toString(val, ctx->runner->dataWin); result = RValue_makeOwnedString(s); break; }
+         case 0xF0: result = RValue_makeInt32((int32_t) val.real); break;
+@@ -1701,7 +1701,7 @@ static void handleConv(VMContext* ctx, uint8_t srcType, uint8_t dstType, uint8_t
+         case 0x01: result = RValue_makeReal(val.real); break;
+         case 0x21: result = RValue_makeInt32((int32_t) val.real); break;
+         case 0x31: result = RValue_makeInt64((int64_t) val.real); break;
+-        case 0x41: result = RValue_makeBool(val.real > 0.5); break;
++        case 0x41: result = RValue_makeBool(val.real > (GMLReal) 0.5); break;
+         case 0x51: result = val; break; // Float -> Variable (passthrough)
+ 
+         // Int32 (2) -> other
+@@ -3307,12 +3307,28 @@ static RValue executeLoop(VMContext* ctx) {
+                 uint8_t aType = slotA->type;
+                 uint8_t bType = slotB->type;
+ 
+-                // Inline fast path for INT32|REAL/INT32|REAL
+-                if ((aType == RVALUE_INT32 || aType == RVALUE_REAL) && (bType == RVALUE_INT32 || bType == RVALUE_REAL)) {
++                if (aType == RVALUE_INT32 && bType == RVALUE_INT32) {
++                    int32_t ia = slotA->int32;
++                    int32_t ib = slotB->int32;
++                    bool result;
++                    switch (instrCmpKind(instr)) {
++                        case CMP_LT:  result = ia < ib;  break;
++                        case CMP_LTE: result = ia <= ib; break;
++                        case CMP_EQ:  result = ia == ib; break;
++                        case CMP_NEQ: result = ia != ib; break;
++                        case CMP_GTE: result = ia >= ib; break;
++                        case CMP_GT:  result = ia > ib;  break;
++                        default:      result = false;    break;
++                    }
++                    slotA->int32 = result ? 1 : 0;
++                    slotA->type = RVALUE_BOOL;
++                    slotA->gmlStackType = GML_TYPE_BOOL;
++                    ctx->stack.top--;
++                } else if ((aType == RVALUE_INT32 || aType == RVALUE_REAL) && (bType == RVALUE_INT32 || bType == RVALUE_REAL)) {
+                     GMLReal a = aType == RVALUE_INT32 ? (GMLReal)slotA->int32 : slotA->real;
+                     GMLReal b = bType == RVALUE_INT32 ? (GMLReal)slotB->int32 : slotB->real;
+                     GMLReal diff = a - b;
+-                    int cmp = (GMLReal_fabs(diff) <= GML_MATH_EPSILON) ? 0 : (diff < 0) ? -1 : 1;
++                    int cmp = (GMLReal_fabs(diff) <= GML_MATH_EPSILON) ? 0 : (diff < (GMLReal) 0.0) ? -1 : 1;
+                     bool result;
+                     switch (instrCmpKind(instr)) {
+                         case CMP_LT:  result = cmp < 0;  break;
+diff --git a/src/vm.h b/src/vm.h
+index eb12f9babfc81fb9efde671d3cc5f7ccf0acdd82..a9c1741ef3db4233044be39e6205f05ddaedbec8 100644
+--- a/src/vm.h
++++ b/src/vm.h
+@@ -43,7 +43,7 @@
+ // non-IEEE FPUs (example: PS2's R5900 which rounds toward zero instead of round-to-nearest) can
+ // exceed the default epsilon.
+ #ifdef USE_FLOAT_REALS
+-#define GML_MATH_EPSILON 1e-4
++#define GML_MATH_EPSILON 1e-4f
+ #else
+ #define GML_MATH_EPSILON 1e-5
+ #endif
+-- 
+2.43.0
+

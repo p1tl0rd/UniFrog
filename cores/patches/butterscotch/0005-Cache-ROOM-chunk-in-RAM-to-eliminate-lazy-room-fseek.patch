@@ -1,0 +1,321 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: UniFrog CI <ci@unifrog.local>
+Date: Sat, 28 Nov 2026 10:59:58 +0700
+Subject: [PATCH 5/5] Cache ROOM chunk in RAM to eliminate lazy room fseek
+ hangs and reduce BGM/atlas stalls
+
+---
+ src/data_win.c                | 32 ++++++++++++++++++++++++----
+ src/data_win.h                |  3 +++
+ src/runner.c                  |  8 +++++--
+ src/sf2000/sf2000_audio.c     | 39 ++++++++++++++++++++++++++++++-----
+ src/sf3000/main.c             |  6 +++---
+ src/sw_renderer/atlas.c       |  7 +++++++
+ src/sw_renderer/atlas.h       |  1 +
+ src/sw_renderer/sw_renderer.c |  2 ++
+ src/vm.c                      |  4 ++++
+ 9 files changed, 88 insertions(+), 14 deletions(-)
+
+diff --git a/src/data_win.c b/src/data_win.c
+index 6ab9ba01a9c9b512762f0c018587b79f990d9733..4443c792f2c64f40aff1d48e5a3910648c4e636a 100644
+--- a/src/data_win.c
++++ b/src/data_win.c
+@@ -3065,6 +3065,12 @@ DataWin* DataWin_parse(const char* filePath, DataWinParserOptions options) {
+             parseOBJT(&reader, dw);
+         } else if (options.parseRoom && memcmp(chunkName, "ROOM", 4) == 0) {
+             parseROOM(&reader, dw, options.lazyLoadRooms, options.eagerlyLoadedRooms);
++            if (options.lazyLoadRooms && chunkBuffer != nullptr) {
++                dw->roomChunkBuffer = chunkBuffer;
++                dw->roomChunkBase = chunkDataStart;
++                dw->roomChunkSize = chunkLength;
++                chunkBuffer = nullptr;
++            }
+         } else if (memcmp(chunkName, "DAFL", 4) == 0) {
+             // Empty chunk, nothing to parse
+         } else if (memcmp(chunkName, "EMBI", 4) == 0) {
+@@ -3388,6 +3394,8 @@ void DataWin_free(DataWin* dw) {
+     // Owned buffers
+     if (!dw->mappedFile)
+         free(dw->strgBuffer);
++    free(dw->roomChunkBuffer);
++    dw->roomChunkBuffer = nullptr;
+     free(dw->bytecodeBuffer);
+ 
+     // Close the lazy-load file handle (only open when lazyLoadRooms/lazyLoadTextures was enabled)
+@@ -3440,14 +3448,30 @@ void DataWin_freeRoomPayload(Room* room) {
+     room->payloadLoaded = false;
+ }
+ 
++static bool offsetInRange(uint32_t off, size_t base, size_t size) {
++    if (off == 0) return true;
++    return (size_t)off >= base && (size_t)off < base + size;
++}
++
+ void DataWin_loadRoomPayload(DataWin* dw, int32_t roomIndex) {
+     require(roomIndex >= 0 && dw->room.count > (uint32_t) roomIndex);
+     Room* room = &dw->room.rooms[roomIndex];
+     if (room->payloadLoaded) return;
+-    requireMessage(dw->lazyLoadFile != nullptr, "DataWin_loadRoomPayload called without an open lazy-load FILE*");
+-
+-    FILE* f = dw->lazyLoadFile;
+-    BinaryReader lazyReader = BinaryReader_create(f, dw->fileSize);
++    requireMessage(dw->lazyLoadFile != nullptr || dw->roomChunkBuffer != nullptr,
++                   "DataWin_loadRoomPayload called without an open lazy-load FILE* or ROOM buffer");
++
++    BinaryReader lazyReader = BinaryReader_create(dw->lazyLoadFile, dw->fileSize);
++    if (dw->roomChunkBuffer != nullptr &&
++        offsetInRange(room->backgroundsFileOffset, dw->roomChunkBase, dw->roomChunkSize) &&
++        offsetInRange(room->viewsFileOffset, dw->roomChunkBase, dw->roomChunkSize) &&
++        offsetInRange(room->gameObjectsFileOffset, dw->roomChunkBase, dw->roomChunkSize) &&
++        offsetInRange(room->tilesFileOffset, dw->roomChunkBase, dw->roomChunkSize) &&
++        offsetInRange(room->layersFileOffset, dw->roomChunkBase, dw->roomChunkSize)) {
++        BinaryReader_setBuffer(&lazyReader, dw->roomChunkBuffer, dw->roomChunkBase, dw->roomChunkSize);
++    } else {
++        requireMessage(dw->lazyLoadFile != nullptr,
++                       "DataWin_loadRoomPayload called without an open lazy-load FILE*");
++    }
+     readRoomPayload(&lazyReader, dw, room);
+ }
+ 
+diff --git a/src/data_win.h b/src/data_win.h
+index 409caa63647f53c5b3662756c6abb758eee05928..cadc001f630cebd192ccbff04f226b30b7a7281a 100644
+--- a/src/data_win.h
++++ b/src/data_win.h
+@@ -943,6 +943,9 @@ struct DataWin {
+     // nullptr when lazy loading is disabled. Closed by DataWin_free.
+     FILE* lazyLoadFile;
+     uint8_t* mappedFile;
++    uint8_t* roomChunkBuffer;
++    size_t roomChunkBase;
++    size_t roomChunkSize;
+     size_t fileSize; // cached size of the DataWin, captured at parse time. Used for platforms where fseek(SEEK_END)+ftell is unreliable due to buffering (like the PlayStation 2).
+     bool lazyLoadRooms; // mirrors the parser option so Runner can branch without re-reading options
+     bool lazyLoadTextures; // ditto, but with TXTR pages
+diff --git a/src/runner.c b/src/runner.c
+index 2afb4203632ebf12b04b9282c4f61cf02f24583a..680580dd54dd1073a881e4d14bc30f1febdfdfd3 100644
+--- a/src/runner.c
++++ b/src/runner.c
+@@ -1698,8 +1698,12 @@ static void initRoom(Runner* runner, int32_t roomIndex) {
+         // Event iteration is forward (oldest first), so a persistent instance runs after the room's own instances.
+         int32_t savedCount = (int32_t) arrlen(savedState->instances);
+         repeat(savedCount, i) {
+-            arrput(runner->instances, savedState->instances[i]);
+-            Runner_addInstanceToObjectLists(runner, savedState->instances[i]);
++            Instance* inst = savedState->instances[i];
++            arrsetlen(inst->collisionCells, 0);
++            inst->spatialGridDirty = false;
++            SpatialGrid_markInstanceAsDirty(runner->spatialGrid, inst);
++            arrput(runner->instances, inst);
++            Runner_addInstanceToObjectLists(runner, inst);
+         }
+         arrfree(savedState->instances);
+         savedState->instances = nullptr;
+diff --git a/src/sf2000/sf2000_audio.c b/src/sf2000/sf2000_audio.c
+index 2c3546e39ab986e43e3c5e62d1ebd4a2cd45d663..89b3a8dc680e193e345f21e54e3486ed5889b685 100644
+--- a/src/sf2000/sf2000_audio.c
++++ b/src/sf2000/sf2000_audio.c
+@@ -53,7 +53,7 @@ extern void stb_vorbis_close(stb_vorbis *f);
+ #define MAX_SOUND_INSTANCES 16
+ #define MAX_AUDIO_STREAMS 16
+ 
+-#define AUDIO_RAM_PRELOAD_MAX (4u * 1024u * 1024u)
++#define AUDIO_RAM_PRELOAD_MAX (256u * 1024u)
+ #define AUDIO_FILE_IOBUF_SIZE (16u * 1024u)
+ #define STREAM_SCRATCH_CAP 8192
+ 
+@@ -120,6 +120,8 @@ static char* tryResolveFile(FileSystem* fs, const char* candidate) {
+     return NULL;
+ }
+ 
++static bool s_preferMusPrefix = false;
++
+ static char* resolveAudioPath(FileSystem* fs, const char* filename) {
+     if (!fs || !filename || !filename[0]) return NULL;
+ 
+@@ -133,6 +135,17 @@ static char* resolveAudioPath(FileSystem* fs, const char* filename) {
+     /* Prefer pre-converted mono IMA-ADPCM / PCM .wav over .ogg when present */
+     if (isOgg) {
+         char wavCand[512];
++        if (isMusicDir && s_preferMusPrefix) {
++            const char* baseDot = strrchr(base, '.');
++            if (baseDot) {
++                int len = snprintf(wavCand, sizeof(wavCand), "mus_%.*s.wav",
++                                   (int)(baseDot - base), base);
++                if (len > 0 && (size_t)len < sizeof(wavCand)) {
++                    char* p = tryResolveFile(fs, wavCand);
++                    if (p) return p;
++                }
++            }
++        }
+         size_t stemLen = (size_t)(dot - filename);
+         if (stemLen + 5 <= sizeof(wavCand)) {
+             memcpy(wavCand, filename, stemLen);
+@@ -140,30 +153,45 @@ static char* resolveAudioPath(FileSystem* fs, const char* filename) {
+             char* p = tryResolveFile(fs, wavCand);
+             if (p) return p;
+         }
+-        if (isMusicDir) {
++        if (isMusicDir && !s_preferMusPrefix) {
+             const char* baseDot = strrchr(base, '.');
+             if (baseDot) {
+                 int len = snprintf(wavCand, sizeof(wavCand), "mus_%.*s.wav",
+                                    (int)(baseDot - base), base);
+                 if (len > 0 && (size_t)len < sizeof(wavCand)) {
+                     char* p = tryResolveFile(fs, wavCand);
+-                    if (p) return p;
++                    if (p) {
++                        s_preferMusPrefix = true;
++                        return p;
++                    }
+                 }
+             }
+         }
+     }
+ 
++    if (isMusicDir && isOgg && n > 4 && s_preferMusPrefix) {
++        char mapped[512];
++        int len = snprintf(mapped, sizeof(mapped), "mus_%s", base);
++        if (len > 0 && (size_t)len < sizeof(mapped)) {
++            char* p = tryResolveFile(fs, mapped);
++            if (p) return p;
++        }
++    }
++
+     char* p = tryResolveFile(fs, filename);
+     if (p) return p;
+ 
+     /* Undertale's GML uses music/name.ogg; its Linux package names these
+      * same tracks mus_name.ogg beside game.unx. */
+-    if (isMusicDir && isOgg && n > 4) {
++    if (isMusicDir && isOgg && n > 4 && !s_preferMusPrefix) {
+         char mapped[512];
+         int len = snprintf(mapped, sizeof(mapped), "mus_%s", base);
+         if (len > 0 && (size_t)len < sizeof(mapped)) {
+             p = tryResolveFile(fs, mapped);
+-            if (p) return p;
++            if (p) {
++                s_preferMusPrefix = true;
++                return p;
++            }
+         }
+     }
+     return NULL;
+@@ -957,6 +985,7 @@ static void sf2000AudioDestroy(AudioSystem* audio) {
+     free(audio->groupGains);
+     arrfree(audio->audioGroups);
+     s_audio = NULL;
++    s_preferMusPrefix = false;
+     free(audio);
+ }
+ 
+diff --git a/src/sf3000/main.c b/src/sf3000/main.c
+index 2fd0b3d80370e8195d11f58ecdf8cea9092007dd..9ff5da97a566da26fd4eea4c8298aa04cf6b9822 100644
+--- a/src/sf3000/main.c
++++ b/src/sf3000/main.c
+@@ -26,7 +26,7 @@ static unsigned render_height = HEIGHT;
+ 
+ static const struct retro_variable core_vars[] = {
+     { "butterscotch_bgm", "Background Music; enabled|disabled" },
+-    { "butterscotch_texture_cache", "Texture Cache (MB); 12|8|16|4" },
++    { "butterscotch_texture_cache", "Texture Cache (MB); 24|16|12|32|8" },
+     { "butterscotch_bilinear", "Bilinear Filter; disabled|enabled" },
+     { "butterscotch_render_scale", "Render Scale (%); 100|75|50" },
+     { NULL, NULL }
+@@ -156,7 +156,7 @@ bool retro_load_game(const struct retro_game_info *info) {
+     enum retro_pixel_format format = RETRO_PIXEL_FORMAT_RGB565;
+     if (environment_cb) environment_cb(RETRO_ENVIRONMENT_SET_PIXEL_FORMAT, &format);
+ 
+-    int cache_mb = 12;
++    int cache_mb = 24;
+     bool bilinear = false;
+     render_width = WIDTH;
+     render_height = HEIGHT;
+@@ -164,7 +164,7 @@ bool retro_load_game(const struct retro_game_info *info) {
+     var.key = "butterscotch_texture_cache";
+     if (environment_cb && environment_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value) {
+         int val = atoi(var.value);
+-        if (val >= 4 && val <= 16) cache_mb = val;
++        if (val >= 4 && val <= 32) cache_mb = val;
+     }
+     var.key = "butterscotch_bilinear";
+     var.value = NULL;
+diff --git a/src/sw_renderer/atlas.c b/src/sw_renderer/atlas.c
+index a60366154033e63499ce0abab28aec2736c7d4db..8d36dd0a5a2c6a9d1de264319378d9f5414be88a 100644
+--- a/src/sw_renderer/atlas.c
++++ b/src/sw_renderer/atlas.c
+@@ -100,9 +100,15 @@ bool SwAtlas_open(SwAtlas* atlas, const char* dir) {
+     atlas->pixels = fopen(path, "rb");
+     if (!atlas->pixels) { free(recs); return false; }
+ 
++    atlas->ioBuf = (char*)malloc(16384);
++    if (atlas->ioBuf) {
++        setvbuf(atlas->pixels, atlas->ioBuf, _IOFBF, 16384);
++    }
++
+     atlas->byTpag = (SwAtlasBlock**)calloc((size_t)count, sizeof(SwAtlasBlock*));
+     if (!atlas->byTpag) {
+         fclose(atlas->pixels);
++        free(atlas->ioBuf);
+         free(recs);
+         return false;
+     }
+@@ -115,6 +121,7 @@ bool SwAtlas_open(SwAtlas* atlas, const char* dir) {
+ void SwAtlas_close(SwAtlas* atlas) {
+     SwAtlasCache_clear(atlas);
+     if (atlas->pixels) fclose(atlas->pixels);
++    free(atlas->ioBuf);
+     free(atlas->byTpag);
+     free(atlas->records);
+     memset(atlas, 0, sizeof(*atlas));
+diff --git a/src/sw_renderer/atlas.h b/src/sw_renderer/atlas.h
+index 29480bb286a0a6b75933d6b0fc1abbcb78d086bf..34b787cfc2e7d65965d703a87012839da835bf89 100644
+--- a/src/sw_renderer/atlas.h
++++ b/src/sw_renderer/atlas.h
+@@ -62,6 +62,7 @@ typedef struct {
+     SwAtlasRecord* records;
+     uint32_t count;
+     FILE*    pixels;
++    char*    ioBuf;
+ 
+     SwAtlasBlock** byTpag;
+     SwAtlasBlock* lruHead;
+diff --git a/src/sw_renderer/sw_renderer.c b/src/sw_renderer/sw_renderer.c
+index 2df8f99ed7aa1aa57a70a5aea99b714d8d3f10ff..cd70946de20c75f8dbed2f57ef867831815946f1 100644
+--- a/src/sw_renderer/sw_renderer.c
++++ b/src/sw_renderer/sw_renderer.c
+@@ -107,6 +107,8 @@ static inline uint16_t bgrToRgb565(uint32_t c) {
+ 
+ /* src * a + dst * (255 - a), all 8-bit, via 32-bit SWAR 5-bit alpha (0..32). */
+ static inline uint16_t blendRgb565(uint16_t src, uint16_t dst, int32_t a) {
++    if (a <= 0) return dst;
++    if (a >= 255) return src;
+     uint32_t a5 = (uint32_t)(a + 4) >> 3;
+     uint32_t s = ((uint32_t)src | ((uint32_t)src << 16)) & 0x07E0F81Fu;
+     uint32_t d = ((uint32_t)dst | ((uint32_t)dst << 16)) & 0x07E0F81Fu;
+diff --git a/src/vm.c b/src/vm.c
+index 53e69bcafb74057b9ca9eccd770fe9e8ece2411a..2c65f3f21be2c33151ffd60b2cf3e7afc9ab11dc 100644
+--- a/src/vm.c
++++ b/src/vm.c
+@@ -3322,7 +3322,9 @@ static RValue executeLoop(VMContext* ctx) {
+                     }
+                     slotA->int32 = result ? 1 : 0;
+                     slotA->type = RVALUE_BOOL;
++                    slotA->ownsReference = false;
+                     slotA->gmlStackType = GML_TYPE_BOOL;
++                    slotA->assetRefType = 0;
+                     ctx->stack.top--;
+                 } else if ((aType == RVALUE_INT32 || aType == RVALUE_REAL) && (bType == RVALUE_INT32 || bType == RVALUE_REAL)) {
+                     GMLReal a = aType == RVALUE_INT32 ? (GMLReal)slotA->int32 : slotA->real;
+@@ -3341,7 +3343,9 @@ static RValue executeLoop(VMContext* ctx) {
+                     }
+                     slotA->int32 = result ? 1 : 0;
+                     slotA->type = RVALUE_BOOL;
++                    slotA->ownsReference = false;
+                     slotA->gmlStackType = GML_TYPE_BOOL;
++                    slotA->assetRefType = 0;
+                     ctx->stack.top--;
+                 } else {
+                     handleCmp(ctx, instr);
+-- 
+2.43.0
+
